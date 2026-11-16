@@ -1,0 +1,698 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{xcolor}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    citecolor=blue!70!black,
+    urlcolor=blue!70!black
+}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{corollary}{Corollary}
+\newtheorem{proposition}{Proposition}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\calA}{\mathcal{A}}
+\newcommand{\calB}{\mathcal{B}}
+\newcommand{\calC}{\mathcal{C}}
+\newcommand{\calD}{\mathcal{D}}
+\newcommand{\calE}{\mathcal{E}}
+\newcommand{\calF}{\mathcal{F}}
+\newcommand{\calG}{\mathcal{G}}
+\newcommand{\calI}{\mathcal{I}}
+\newcommand{\calL}{\mathcal{L}}
+\newcommand{\calM}{\mathcal{M}}
+\newcommand{\calO}{\mathcal{O}}
+\newcommand{\calR}{\mathcal{R}}
+\newcommand{\calT}{\mathcal{T}}
+\newcommand{\calW}{\mathcal{W}}
+\newcommand{\calX}{\mathcal{X}}
+\newcommand{\calY}{\mathcal{Y}}
+\newcommand{\calZ}{\mathcal{Z}}
+\newcommand{\Unif}{\operatorname{Unif}}
+\newcommand{\Gumbel}{\operatorname{Gumbel}}
+\newcommand{\Expo}{\operatorname{Exp}}
+\newcommand{\Lap}{\operatorname{Lap}}
+\newcommand{\clip}{\operatorname{clip}}
+\newcommand{\TV}{d_{\mathrm{TV}}}
+\newcommand{\Gain}{\operatorname{Gain}}
+\newcommand{\OPT}{\operatorname{OPT}}
+\newcommand{\poly}{\operatorname{poly}}
+
+\title{\textbf{History-Independent Dynamic Decision Trees:\\ Polylogarithmic Exact and Adaptive Machine Unlearning}}
+\author{Working Research Draft}
+\date{November 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Maintaining decision trees over datasets undergoing arbitrary insertions and deletions has recently been studied from two disconnected perspectives. On one hand, deterministic fully-dynamic algorithms (\texttt{FuDyADT}, Bressan, Damay, and Sozio, AAAI 2023; \texttt{FUDY-WC}, Bressan and Sozio, ICML 2024) achieve polylogarithmic update times for $\beta$-approximate greedy decision trees, but rely on lazy drift tolerances that make the maintained tree strongly \emph{history-dependent}---violating machine unlearning guarantees because inserting and subsequently deleting an example leaves persistent structural traces. On the other hand, exact machine unlearning methods for trees and forests (\texttt{DaRE}, Brophy and Lowd, ICML 2021; \texttt{HedgeCut}, Schelter et al., SIGMOD 2021; \texttt{DynFrs}, Wang et al., ICLR 2025) guarantee history-independence, but suffer $\Omega(dn)$ worst-case update times or rely on data-oblivious random top splits.
+
+In this note, we bridge these two lines of work with self-contained proofs across three main results:
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+    \item \textbf{Oblivious Exact Unlearning (Strong History Independence):} Against any oblivious sequence of insertions and deletions (with active size $|S_\tau| \le N$), we design dynamic algorithms that maintain a \emph{canonical} randomized $\beta$-approximate decision tree $T_\tau = T(S_\tau; R)$ achieving \emph{exact $(0,0)$-machine unlearning} ($\TV = 0$ at every step, with zero degradation over unboundedly many updates) and deterministic $+\beta$ node-wise Gini optimality. Updates take $O(d \beta^{-2} \log^2 n \log(dN/\beta))$ expected time and $O(nd)$ space for binary/categorical features, and $O(d \beta^{-3} \log n \log(dN/\beta) + d \beta^{-2} \log^2 n \log(dN/\beta))$ expected time and $O(nd\beta^{-1})$ space for real-valued features $\R^d$.
+    \item \textbf{Adaptive Lower Bound (Exponential Separation Under Full-Tree Publishing):} Against an \emph{adaptive} adversary who observes the explicit tree topology $T_{\tau-1}$ before choosing deletion $u_\tau$, we prove an unconditional lower bound: \emph{any} $(\varepsilon, \delta)$-certified adaptive unlearner must flip its root split with probability $\Omega(e^{-\varepsilon})$ even after a single deletion on binary features, forcing $\tilde{\Omega}(n e^{-\varepsilon})$ expected syntactic node modifications (and $\Omega(n e^{-\varepsilon})$ leaf-set updates) even on binary labels.
+    \item \textbf{Adaptive Upper Bound (Seed-DP Random Forests):} In the query-access / ensemble API model, maintaining a Random Forest of $L = \tilde{O}(\sqrt{Q}/(\gamma\varepsilon))$ independent canonical trees and answering $Q$ adaptive prediction queries via Laplace-noisy voting achieves $(\varepsilon, \delta)$-certified adaptive unlearning ($\varepsilon \in (0, 1]$) across \emph{unboundedly many} adaptive insertions and deletions in $\tilde{O}(L \cdot d \beta^{-3} \log^2 n)$ expected time per update.
+\end{enumerate}
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ==============================================================================
+\section{Introduction and Summary of Contributions}
+% ==============================================================================
+
+Decision trees and their ensembles (Random Forests and Gradient Boosted Trees) remain the dominant paradigm for tabular machine learning and interpretable decision-making. In modern data pipelines, training sets are rarely static: new labeled examples arrive continuously, while existing records must be excised on demand due to privacy regulations such as GDPR's ``right to be forgotten,'' label corrections, or sliding-window expiration.
+
+Two communities have tackled dynamic maintenance of decision trees under fundamentally conflicting requirements:
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Adversarial Fully-Dynamic Algorithms:} Bressan, Damay, and Sozio~\cite{bressan2023fully} (\texttt{FuDyADT}) introduced the first deterministic fully-dynamic algorithm maintaining a decision tree where every node's Gini split gain is within $+\beta$ of optimal in $O(d \beta^{-2} \log^3 n)$ amortized update time ($O(d \beta^{-1} \log^2 n)$ for categorical features) and $O(nd)$ space. Bressan and Sozio~\cite{bressan2024worst} (\texttt{FUDY-WC}) subsequently achieved $O(d \beta^{-3} \log^4 n)$ \emph{worst-case} update time. However, both algorithms achieve efficiency by \emph{ignoring} updates at a node $v$ until $\Theta(\beta n_v)$ updates accumulate. Consequently, the maintained tree is \textbf{history-dependent}: executing $\mathsf{insert}(x)$ followed by $\mathsf{delete}(x)$ can leave behind a completely different tree than if $x$ had never arrived, leaking the prior presence of $x$.
+    \item \textbf{Machine Unlearning for Trees:} Brophy and Lowd~\cite{brophy2021machine} (\texttt{DaRE}), Schelter et al.~\cite{schelter2021hedgecut} (\texttt{HedgeCut}), and Wang et al.~\cite{wang2025dynfrs} (\texttt{DynFrs}) enforce \textbf{exact machine unlearning}: after deleting $x$ from $S$, the maintained model has the \emph{exact same probability distribution} as retraining from scratch on $S \setminus \{x\}$. Yet none of these methods achieve sublinear update bounds on greedy splits: if two candidate splits at the root are nearly tied, deleting a single example triggers a full $\Omega(dn \log n)$ retraining of the tree (which \texttt{DaRE} and \texttt{HedgeCut} mitigate heuristically only by replacing top-level greedy splits with data-oblivious random splits). Meanwhile, Total-Variation (TV) stability and maximal coupling techniques (\cite{ullah2021machine}) have been limited to noisy convex optimization rather than discrete recursive partitioning.
+\end{itemize}
+
+\begin{table}[h!]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}lllll@{}}
+\toprule
+\textbf{Method / Result} & \textbf{Adversary} & \textbf{Unlearning} & \textbf{Update Time (Gini, $+\beta$)} & \textbf{Space} \\
+\midrule
+\texttt{FuDyADT}~\cite{bressan2023fully} & Adaptive & None (history-dep.) & $O(d\beta^{-2}\log^3 n)$ amort.\ ($\R^d$) & $O(nd)$ \\
+\texttt{FUDY-WC}~\cite{bressan2024worst} & Adaptive & None (history-dep.) & $O(d\beta^{-3}\log^4 n)$ worst-case ($\R^d$) & $O(nd\poly(\frac{\log n}{\beta}))$ \\
+\texttt{DaRE}~\cite{brophy2021machine} / \texttt{DynFrs}~\cite{wang2025dynfrs} & Oblivious & Exact $(0,0)$ & $\Omega(dn \log n)$ worst-case & $O(nd)$ \\
+\midrule
+\textbf{Theorem~\ref{thm:oblivious}a} (Ours, $\{0,1\}^d$) & Oblivious & \textbf{Exact $(0,0)$} & $O(d\beta^{-2}\log^2 n \log\frac{dN}{\beta})$ exp. & $O(nd)$ \\
+\textbf{Theorem~\ref{thm:oblivious}b} (Ours, $\R^d$) & Oblivious & \textbf{Exact $(0,0)$} & $O\big(d\beta^{-3}\log n \log\frac{dN}{\beta} + d\beta^{-2}\log^2 n \log\frac{dN}{\beta}\big)$ exp. & $O(nd\beta^{-1})$ \\
+\textbf{Theorem~\ref{thm:lower}} (Lower Bound) & Adaptive (Tree) & Approx.\ $(\varepsilon,\delta)$ & $\mathbf{\tilde{\Omega}(n e^{-\varepsilon})}$ expected (1 deletion) & Any \\
+\textbf{Theorem~\ref{thm:adaptive}} (Ours, Forest API) & Adaptive ($Q$ queries) & \textbf{Certified $(\varepsilon,\delta)$} & $\tilde{O}\big(\frac{\sqrt{Q}}{\gamma\varepsilon} d\beta^{-3}\log^2 n\big)$ exp.\ ($M$ unbounded) & $O(L nd\beta^{-1})$ \\
+\bottomrule
+\end{tabular}%
+}
+\caption{Comparison of fully-dynamic decision tree guarantees ($n = |S_\tau| \le N$, $d$ features, $k = O(1)$ classes).}
+\label{tab:summary}
+\end{table}
+
+\subsection*{Main Contributions}
+Table~\ref{tab:summary} summarizes our results:
+\begin{enumerate}[leftmargin=1.5em]
+    \item \textbf{Polylogarithmic Exact Machine Unlearning (Theorem~\ref{thm:oblivious}):} We show that exact $(0,0)$-machine unlearning (\emph{strong history independence}) and deterministic $+\beta$ greedy split optimality are simultaneously achievable in polylogarithmic expected time per insertion or deletion against oblivious update sequences, for both binary/categorical features ($\tilde{O}(d\beta^{-2})$) and continuous features $\R^d$ ($\tilde{O}(d\beta^{-3})$). Moreover, a telescoping Gini potential bound shaves $\log n$ factors off both space ($O(nd\beta^{-1})$ on $\R^d$) and static subtree reconstruction.
+    \item \textbf{Sharp Separation Against Adaptive Full-Tree Adversaries (Theorem~\ref{thm:lower}):} When an adaptive adversary observes the explicit tree $T_{\tau-1}$ after every update before choosing $u_\tau$, we prove that \emph{no} dynamic algorithm can satisfy even approximate $(\varepsilon, \delta)$-unlearning without flipping its root split with probability $\Omega(e^{-\varepsilon})$ after a single deletion---yielding an exponential $\tilde{O}(\poly(\beta^{-1}, \log n))$ vs.\ $\tilde{\Omega}(n)$ separation between oblivious and full-tree adaptive unlearning.
+    \item \textbf{Adaptive Unlearning via Seed-Level Differential Privacy (Theorem~\ref{thm:adaptive}):} Combining our canonical history-independent trees with seed-level differential privacy and max-information composition (\cite{dwork2015generalization,gupta2021adaptive,beimel2022dynamic}), we show that a Random Forest of $L = \tilde{O}(\sqrt{Q}/(\gamma\varepsilon))$ trees supports \emph{unboundedly many} adaptive insertions and deletions alongside $Q$ adaptive prediction queries with $(\varepsilon,\delta)$-certified unlearning and polylogarithmic update time per tree.
+\end{enumerate}
+
+% ==============================================================================
+\section{Overview of Key Technical Ideas}
+% ==============================================================================
+
+\paragraph{1. Canonical Low-Sensitivity Seeded Trees ($n_p$-Cancellation).}
+To eliminate history-dependence completely, we sample a single random seed $R$ at initialization ($t = 0$) defining a deterministic map $S \mapsto T(S; R)$, and maintain $T_\tau = T(S_\tau; R)$ eagerly after every update. Exact $(0,0)$-unlearning for any oblivious update sequence is immediate: if $S_\tau = S_0$, then $T_\tau = T_0$ bit-for-bit. To avoid $\Omega(dn)$ rebuilds, the randomized split rule at each tree node address $p$ (holding $n_p = |S_p|$ active points) must flip its decision under a single insertion/deletion with probability at most $O\big(\frac{\log(dN/\beta)}{\beta n_p}\big)$. Multiplying this flip probability by the $\tilde{O}(d\beta^{-1} n_p)$ cost of rebuilding subtree $T_p$ cancels $n_p$ in expectation.
+
+\paragraph{2. Shifted Gumbel Races and Unified Leaf Stopping.}
+Two deterministic pitfalls would destroy $O(1/(\beta n_p))$ stability even on $\{0,1\}^d$:
+\begin{itemize}[leftmargin=1.5em]
+    \item \emph{Hard stopping cliffs:} A deterministic leaf criterion such as $\max_j G(S_p, j) < \beta$ flips between a single leaf and a full subtree of size $n$ on every update if $\max_j G(S_p, j)$ oscillates around $\beta$.
+    \item \emph{Uniform noise gap collapse:} Adding i.i.d.\ $\Unif[0, \beta]$ perturbations to $M$ tied candidates produces an expected gap of only $\Theta(\beta / M)$ between the highest and second-highest scores, inflating the flip probability by a factor of $M$ ($= d$ or $dK$).
+\end{itemize}
+We solve both simultaneously by introducing a dummy ``stop (leaf)'' candidate $\bot$ with fixed score $g_\bot = \frac{1}{2}\beta$ alongside the split candidates, and adding clipped i.i.d.\ $\Gumbel(0, \lambda)$ perturbations $\xi_{p, c} \in [-\frac{\beta}{8}, \frac{\beta}{8}]$ with $\lambda = \Theta\big(\frac{\beta}{\log(dN/\beta)}\big)$. Using the equivalence between Gumbel-Max and minimum-time exponential races (Lemma~\ref{lem:gumbel}), the top-2 gap $\Gamma$ stochastically dominates $\lambda \ln(1 + Y/X)$ for $X, Y \stackrel{\text{i.i.d.}}{\sim} \Expo(1)$ \emph{completely independent of the number of candidates $M$}, bounding the flip probability under $\|g - g'\|_\infty \le \Delta$ by $2\Delta / \lambda$. Clipping $\xi_{p, c}$ to $[-\frac{\beta}{8}, \frac{\beta}{8}]$ makes $+\beta$ split optimality \emph{100\% deterministic} (zero failure probability in accuracy) while preserving exact $(0,0)$-unlearning relative to the clipped static learner.
+
+\paragraph{3. MinHash Quantile Windows on $\R^d$ and Softmax Decoupling.}
+On real-valued features $\R^d$, a subtle third trap arises: if quantile candidate $q$ simply used the $r_q$-th sorted coordinate $x_{(r_q), j}$, inserting one point to the left of the threshold shifts rank $r_q$ by $1$ \emph{with probability $1$}, altering the stored real threshold $\tau_p$ (and moving a point between children) on every update even when $(j^*, q^*)$ does not change.
+
+We fix this by partitioning feature $j$'s sorted order at node $p$ into $K = \lceil 8/\lambda \rceil = \Theta\big(\frac{\log(dN/\beta)}{\beta}\big)$ disjoint rank windows $W_{p, j, q}$ of width $w \approx \frac{n_p}{2K}$, assigning each element $z$ an i.i.d.\ priority $\rho_R(p, j, z) \sim \Unif[0,1]$, and defining window $(j,q)$'s candidate threshold as the coordinate of its minimum-priority element $z^* = \arg\min_{z \in W_{p,j,q}} \rho_R(p, j, z)$. Because a single insertion/deletion changes at most $3$ boundary elements of $W_{p,j,q}$, the exact real threshold $\tau_{p, j, q} = z^*_j$ remains \emph{unchanged} with probability $1 - O(K/n_p)$. Crucially, setting $K \ge 8/\lambda$ ensures that Gini gain varies by at most $\lambda / 2$ across any window; exploiting the independence of $\rho_R$ and $\xi_R$, the probability that \emph{any} jumping window wins the Gumbel race weights the $dK$ jump probabilities by their softmax winning probabilities (which sum to $1$), avoiding a $dK$ union bound (Lemma~\ref{lem:continuous_flip}).
+
+\paragraph{4. Seed-Level Differential Privacy Against Adaptive Adversaries.}
+Against an adaptive adversary who sees $T_1$ verbatim, we construct a 1-deletion correlation attack (Theorem~\ref{thm:lower}) showing that publishing discrete root splits leaks internal randomness with infinite max-information. In the prediction-query API model, we instead maintain $L$ independent copies $T(S_\tau; R^{(1)}), \dots, T(S_\tau; R^{(L)})$. Because changing \emph{one} seed $R^{(\ell)}$ alters at most one tree's vote, noisy ensemble voting is differentially private \emph{with respect to the seed vector $\mathbf{R}$} (updates themselves emit no output and consume zero privacy budget!). A 4-line neighbor-averaging lemma (Lemma~\ref{lem:maxinfo}) converts coordinate-level $(\varepsilon', \delta')$-DP on $\mathbf{R}$ directly into single-seed max-information $I_\infty^{\delta'}(R^{(\ell)} \,;\, S_\tau) \le \varepsilon'$ with zero factor-$L$ overhead, preserving both certified unlearning and polylogarithmic expected update time.
+
+% ==============================================================================
+\section{Preliminaries and Problem Formulation}
+% ==============================================================================
+
+\paragraph{Datasets as Canonicalized Multisets.}
+Let $\calX$ be a $d$-dimensional feature domain (either $\calX = \{0,1\}^d$ or $\calX = \R^d$) and $\calY = \{1, \dots, k\}$ ($k \ge 2$) be the label set. An active dataset $S$ is a finite multiset of labeled examples $(x, y) \in \calX \times \calY$ of size $|S| \le N$, where $N$ is a known polynomial upper bound on active dataset size ($N \ge \max_\tau |S_\tau|$). To distinguish identical copies in a history-independent manner (without timestamps or record IDs), if an element $(x, y)$ has multiplicity $m(x, y) \ge 1$ in $S$, we represent its copies canonically as $(x, y, 1), (x, y, 2), \dots, (x, y, m(x, y))$. Inserting $(x, y)$ adds $(x, y, m(x, y)+1)$, and deleting $(x, y)$ removes $(x, y, m(x, y))$; thus any single insertion or deletion changes the canonicalized set in symmetric difference by $|S \triangle S'| = 1$.
+
+\paragraph{Gini Impurity and $\beta$-Approximate Decision Trees.}
+For a non-empty multiset $S$ of size $m = |S|$ with class counts $c_y(S) = |\{(x, y', i) \in S : y' = y\}|$, the \emph{Gini impurity} and \emph{unnormalized Gini impurity} are
+\[
+    I(S) := 1 - \sum_{y=1}^k \left(\frac{c_y(S)}{m}\right)^2, \qquad F(S) := m \cdot I(S) = m - \frac{1}{m}\sum_{y=1}^k c_y(S)^2,
+\]
+with $I(\emptyset) = F(\emptyset) := 0$. An axis-aligned split predicate $\pi : \calX \to \{L, R\}$ (of the form $x_j = 0$ on $\{0,1\}^d$, or $x_j \le \tau$ / $x_j < \tau$ on $\R^d$) partitions $S$ into $S_L(\pi) \sqcup S_R(\pi)$ and achieves weighted \emph{Gini gain}
+\[
+    G(S, \pi) := I(S) - \frac{|S_L(\pi)|}{m} I(S_L(\pi)) - \frac{|S_R(\pi)|}{m} I(S_R(\pi)) = \frac{1}{m}\big(F(S) - F(S_L(\pi)) - F(S_R(\pi))\big).
+\]
+Let $\Pi(\calX)$ denote the class of axis-aligned splits on $\calX$, and $\OPT(S) := \sup_{\pi \in \Pi(\calX)} G(S, \pi)$.
+
+\begin{definition}[$\beta$-Approximate Greedy Decision Tree]
+Given $\beta \in (0, 1)$ and dataset $S$, a rooted binary decision tree $T$ is \emph{$\beta$-approximate} with respect to $S$ if, letting $S_v \subseteq S$ denote the subset of examples routed to node $v$:
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+    \item For every internal node $v$ with split $\pi_v$, $G(S_v, \pi_v) \ge \OPT(S_v) - \beta$ and $\min(|S_{v_L}|, |S_{v_R}|) \ge 1$.
+    \item For every leaf $\ell$, $\OPT(S_\ell) \le \beta$ (and if $S_\ell \ne \emptyset$, $\ell$ predicts $\arg\max_{y \in [k]} c_y(S_\ell)$, breaking ties toward smaller class indices).
+\end{enumerate}
+\end{definition}
+
+\paragraph{Oblivious and Adaptive Machine Unlearning.}
+For random variables $U, V$ on a measurable space $\Omega$, we write $U \approx_{\varepsilon, \delta} V$ if for all measurable events $E \subseteq \Omega$,
+\[
+    \Prob[U \in E] \le e^\varepsilon \Prob[V \in E] + \delta \quad \text{and} \quad \Prob[V \in E] \le e^\varepsilon \Prob[U \in E] + \delta.
+\]
+Note that $U \approx_{0, 0} V$ is equivalent to $\TV(U, V) = 0$ (identical distributions).
+
+\begin{definition}[Dynamic $(\varepsilon, \delta)$-Machine Unlearning~\cite{ginart2019making,gupta2021adaptive}]
+Let $\calA$ be a static randomized learning algorithm mapping any dataset $S$ to a $\beta$-approximate decision tree $\calA(S)$, and let $\calD$ be a stateful dynamic algorithm processing insertions and deletions $u_1, u_2, \dots$ producing active datasets $S_1, S_2, \dots$ ($|S_\tau| \le N$) and internal model states $M_1, M_2, \dots$ via a state extraction map $\mathsf{Extract}(\Sigma_\tau) = M_\tau$:
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt]
+    \item \textbf{Oblivious Exact Unlearning $(0,0)$:} For every fixed update sequence $(u_1, \dots, u_\tau)$ chosen independently of $\calD$'s internal randomness, $M_\tau \approx_{0, 0} \calA(S_\tau)$. If $M_\tau = T(S_\tau; R)$ is a deterministic function of $(S_\tau, R)$ for an initial seed $R$, we say $\calD$ is \emph{strongly history-independent}.
+    \item \textbf{Adaptive $(\varepsilon, \delta)$-Certified Unlearning:} Consider any stateful adaptive adversary $\mathsf{Adv}$ that, at each round $t \in \{1, \dots, \tau\}$, observes $\calD$'s published outputs $\psi_1, \dots, \psi_{t-1}$ and chooses the next update $u_t$ (or prediction query $x_q$). $\calD$ satisfies $(\varepsilon, \delta)$-adaptive unlearning with respect to $\calA$ if at every step $\tau$, the joint distribution of the adaptively chosen dataset and extracted model satisfies $(S_\tau, M_\tau) \approx_{\varepsilon, \delta} (S_\tau, \calA(S_\tau))$, where $\calA(S_\tau)$ uses fresh randomness independent of $S_\tau$.
+\end{itemize}
+\end{definition}
+
+% ==============================================================================
+\section{Structural and Probabilistic Lemmas}
+% ==============================================================================
+
+We first prove three self-contained lemmas governing Gini sensitivity, Gumbel top-2 gaps, and tree potential bounds.
+
+\begin{lemma}[Monotonicity and Sensitivity of Gini Impurity]
+\label{lem:gini}
+For every finite multiset $S \subseteq \calX \times \calY$ ($|S| = m$) and every example $z = (x, r) \in \calX \times \calY$:
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+    \item \textbf{Bounded Monotone Increment:} $0 \le F(S \cup \{z\}) - F(S) < 2$ (independent of $k$ and $d$).
+    \item \textbf{Split Balancedness:} If $S = S_L \sqcup S_R$ ($m \ge 1$) has $G(S, (S_L, S_R)) \ge \gamma > 0$, then $\min(|S_L|, |S_R|) > \frac{\gamma}{2} m$.
+    \item \textbf{Single-Update Gain Sensitivity:} For any fixed split predicate $\pi : \calX \to \{L, R\}$ and $S' = S \cup \{z\}$, $|G(S', \pi) - G(S, \pi)| < \frac{3}{m + 1}$.
+    \item \textbf{Threshold-Shift Sensitivity:} If $(S_L, S_R)$ and $(S'_L, S'_R)$ are two partitions of the same multiset $S$ ($m \ge 1$) with $|S_L \triangle S'_L| \le s$ (at most $s$ elements switch sides between $L$ and $R$), then $|G(S, (S_L, S_R)) - G(S, (S'_L, S'_R))| \le \frac{2s}{m}$.
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}
+\textbf{(1)} If $m = 0$, $F(\emptyset) = 0$ and $F(\{z\}) = 1 - 1^2/1 = 0$, so the difference is $0$. Suppose $m \ge 1$, let $c_y = c_y(S)$, and let $p_y = c_y / m \in [0, 1]$ ($\sum_{y=1}^k p_y = 1$). Adding $z = (x, r)$ yields $m' = m+1$ and $c'_r = c_r + 1$, so
+\begin{align*}
+    F(S \cup \{z\}) - F(S) &= 1 - \left(\frac{\sum_{y=1}^k c_y^2 + 2 c_r + 1}{m + 1} - \frac{\sum_{y=1}^k c_y^2}{m}\right)
+    = 1 - \frac{m(2c_r + 1) - \sum_{y=1}^k c_y^2}{m(m+1)} \\
+    &= 1 - \frac{2p_r + \frac{1}{m} - \sum_{y=1}^k p_y^2}{1 + \frac{1}{m}}.
+\end{align*}
+Since $\sum_{y=1}^k p_y^2 \ge p_r^2$ and $2p_r - p_r^2 \le 1$, we have $2p_r + \frac{1}{m} - \sum_y p_y^2 \le 1 + \frac{1}{m}$, which gives $F(S \cup \{z\}) - F(S) \ge 1 - 1 = 0$. Conversely, since $p_r \ge 0$ and $\sum_{y=1}^k p_y^2 \le \sum_{y=1}^k p_y = 1$, we have
+\[
+    F(S \cup \{z\}) - F(S) \le 1 + \frac{1 - 0 - \frac{1}{m}}{1 + \frac{1}{m}} = \frac{2m}{m + 1} < 2.
+\]
+
+\textbf{(2)} Inserting the $|S_L|$ elements of $S_L$ into $S_R$ one by one and applying Part~(1) $|S_L|$ times gives $F(S) - F(S_R) < 2|S_L|$ (with $F(S) - F(S_R) = 0$ if $|S_L| = 0$). Since $F(S_L) \ge 0$, we obtain $m \gamma \le F(S) - F(S_L) - F(S_R) < 2|S_L|$, so $|S_L| > \frac{\gamma}{2}m$; symmetry gives $|S_R| > \frac{\gamma}{2}m$.
+
+\textbf{(3)} Without loss of generality suppose $\pi(x) = L$, so $S'_L = S_L \cup \{z\}$ and $S'_R = S_R$. Let $D = F(S) - F(S_L) - F(S_R) = m \cdot G(S, \pi) \in [0, m)$ and $D' = F(S') - F(S'_L) - F(S'_R) = (m+1) G(S', \pi)$. By Part~(1), both $F(S') - F(S) \in [0, 2)$ and $F(S'_L) - F(S_L) \in [0, 2)$, while $F(S'_R) = F(S_R)$, so $|D' - D| < 2$. Since $G(S, \pi) \in [0, 1)$,
+\[
+    \big|G(S', \pi) - G(S, \pi)\big| = \left|\frac{D'}{m+1} - \frac{D}{m}\right| = \left|\frac{D' - D}{m+1} - \frac{G(S, \pi)}{m+1}\right| \le \frac{|D' - D| + G(S, \pi)}{m + 1} < \frac{3}{m + 1}.
+\]
+
+\textbf{(4)} Moving a single element $u$ from $S_L$ to $S_R$ leaves $F(S)$ unchanged, decreases $F(S_L)$ by $F(S_L) - F(S_L \setminus \{u\}) \in [0, 2)$, and increases $F(S_R)$ by $F(S_R \cup \{u\}) - F(S_R) \in [0, 2)$. Thus $(F(S_L) + F(S_R))$ changes in absolute value by less than $2$. Repeating at most $s$ single-element moves changes $F(S_L) + F(S_R)$ by at most $2s$, changing $G = \frac{1}{m}(F(S) - F(S_L) - F(S_R))$ by at most $\frac{2s}{m}$.
+\end{proof}
+
+\begin{lemma}[Top-2 Gap and Perturbation Stability of Gumbel Races]
+\label{lem:gumbel}
+Let $M \ge 2$, $\lambda > 0$, and $g, g' \in \R^M$ satisfy $\|g - g'\|_\infty \le \Delta$. Let $\tilde{\xi}_1, \dots, \tilde{\xi}_M \stackrel{\text{i.i.d.}}{\sim} \Gumbel(0, \lambda)$ (with CDF $\Prob[\tilde{\xi}_c \le z] = \exp(-e^{-z/\lambda})$), and let $Z_{(1)} > Z_{(2)}$ denote the largest and second-largest entries of $(g_c + \tilde{\xi}_c)_{c=1}^M$. Then for every $\eta > 0$:
+\[
+    \Prob\big[Z_{(1)} - Z_{(2)} \le \eta\big] \le 1 - e^{-\eta/\lambda} \le \frac{\eta}{\lambda},
+\]
+and consequently,
+\[
+    \Prob\Big[\arg\max_{c \in [M]} (g_c + \tilde{\xi}_c) \ne \arg\max_{c \in [M]} (g'_c + \tilde{\xi}_c)\Big] \le 1 - e^{-2\Delta/\lambda} \le \frac{2\Delta}{\lambda}.
+\]
+Furthermore, for clipped perturbations $\xi_c := \clip(\tilde{\xi}_c, [-A, B])$ ($A, B > 0$),
+\[
+    \Prob\Big[\arg\max_{c \in [M]} (g_c + \xi_c) \ne \arg\max_{c \in [M]} (g'_c + \xi_c)\Big] \le \frac{2\Delta}{\lambda} + M\Big(e^{-B/\lambda} + \exp(-e^{A/\lambda})\Big).
+\]
+\end{lemma}
+
+\begin{proof}
+Let $E_1, \dots, E_M$ be independent exponential random variables with rates $r_c := e^{g_c / \lambda} > 0$, i.e., $\Prob[E_c > t] = e^{-r_c t}$ for $t \ge 0$. Then $U_c := r_c E_c \sim \Expo(1)$, so for every $z \in \R$,
+\[
+    \Prob[-\lambda \ln E_c \le g_c + z] = \Prob[-\ln U_c \le z/\lambda] = \Prob[U_c \ge e^{-z/\lambda}] = \exp(-e^{-z/\lambda}).
+\]
+Hence $(-\lambda \ln E_c)_{c=1}^M \stackrel{d}{=} (g_c + \tilde{\xi}_c)_{c=1}^M$. Let $E_{(1)} < E_{(2)}$ be the smallest and second-smallest of $(E_1, \dots, E_M)$, so $Z_{(1)} - Z_{(2)} \stackrel{d}{=} \lambda \ln(E_{(2)} / E_{(1)}) = \lambda \ln\big(1 + \frac{E_{(2)} - E_{(1)}}{E_{(1)}}\big)$.
+
+Set $R_{\mathrm{tot}} := \sum_{c=1}^M r_c$. By standard properties of independent exponentials, the minimizer $c_1 = \arg\min_c E_c$ satisfies $\Prob[c_1 = c] = r_c / R_{\mathrm{tot}}$ independently of $E_{(1)} \sim \Expo(R_{\mathrm{tot}})$. Conditioned on $c_1$ and $E_{(1)} = t$, the variables $(E_c - t)_{c \ne c_1}$ are conditionally independent $\Expo(r_c)$ by memorylessness, so $E_{(2)} - E_{(1)} = \min_{c \ne c_1} (E_c - t) \sim \Expo(R_{\mathrm{tot}} - r_{c_1})$. Thus $X := R_{\mathrm{tot}} E_{(1)} \sim \Expo(1)$ and $Y := (R_{\mathrm{tot}} - r_{c_1})(E_{(2)} - E_{(1)}) \sim \Expo(1)$ are independent, and since $r_{c_1} > 0$,
+\[
+    \frac{E_{(2)} - E_{(1)}}{E_{(1)}} = \frac{R_{\mathrm{tot}}}{R_{\mathrm{tot}} - r_{c_1}} \cdot \frac{Y}{X} > \frac{Y}{X}.
+\]
+For independent $X, Y \sim \Expo(1)$ and any $u \ge 0$, $\Prob[Y/X \le u] = \int_0^\infty e^{-x}(1 - e^{-ux})\,dx = \frac{u}{1 + u}$. Setting $u = e^{\eta/\lambda} - 1$ gives
+\[
+    \Prob\big[Z_{(1)} - Z_{(2)} \le \eta\big] \le \Prob\big[Y/X \le e^{\eta/\lambda} - 1\big] = \frac{e^{\eta/\lambda} - 1}{e^{\eta/\lambda}} = 1 - e^{-\eta/\lambda} \le \frac{\eta}{\lambda}.
+\]
+Whenever $Z_{(1)} - Z_{(2)} > 2\Delta$ and $\|g - g'\|_\infty \le \Delta$, the winner $c_1$ on $g$ satisfies $(g'_{c_1} + \tilde{\xi}_{c_1}) - (g'_c + \tilde{\xi}_c) \ge (Z_{(1)} - Z_{(2)}) - 2\Delta > 0$ for all $c \ne c_1$, so $\arg\max_c (g'_c + \tilde{\xi}_c) = c_1$. This yields the unclipped bound with $\eta = 2\Delta$.
+
+Finally, $\xi_c = \tilde{\xi}_c$ for all $c \in [M]$ unless some $c$ has $\tilde{\xi}_c > B$ (probability $1 - \exp(-e^{-B/\lambda}) \le e^{-B/\lambda}$) or $\tilde{\xi}_c < -A$ (probability $\exp(-e^{A/\lambda})$); a union bound over $M$ candidates completes the proof.
+\end{proof}
+
+\begin{lemma}[Tree Height and Telescoping Subtree-Size Potential]
+\label{lem:potential}
+Let $T$ be any binary decision tree on a non-empty multiset $S$ ($|S| = m$) in which every internal node $v \in \calI(T)$ achieves Gini gain $G(S_v, \pi_v) \ge \gamma > 0$. Then:
+\[
+    \operatorname{height}(T) \le \frac{2}{\gamma} \ln m, \qquad |\calI(T)| \le m - 1, \qquad \text{and} \qquad \sum_{v \in \calI(T)} |S_v| < \frac{m}{\gamma}.
+\]
+\end{lemma}
+
+\begin{proof}
+By Lemma~\ref{lem:gini}(2), every $v \in \calI(T)$ satisfies $\min(|S_{v_L}|, |S_{v_R}|) > \frac{\gamma}{2}|S_v| > 0$, so every leaf of $T$ is non-empty ($|\calL(T)| \le m$, hence $|\calI(T)| = |\calL(T)| - 1 \le m - 1$) and $\max(|S_{v_L}|, |S_{v_R}|) < (1 - \gamma/2)|S_v|$. Along any path of length $\ell$ to a non-empty node $u$, $1 \le |S_u| < (1 - \gamma/2)^\ell m \le e^{-\gamma \ell / 2} m$, giving $\ell < \frac{2}{\gamma}\ln m$.
+
+For the sum of subtree sizes, note that $F(S_v) - F(S_{v_L}) - F(S_{v_R}) = |S_v| G(S_v, \pi_v) \ge \gamma |S_v|$ at every $v \in \calI(T)$. Summing over all $v \in \calI(T)$ telescopes all internal child terms:
+\[
+    \gamma \sum_{v \in \calI(T)} |S_v| \le \sum_{v \in \calI(T)} \big(F(S_v) - F(S_{v_L}) - F(S_{v_R})\big) = F(S) - \sum_{\ell \in \calL(T)} F(S_\ell) \le F(S) < m,
+\]
+since $F(S_\ell) \ge 0$ and $F(S) = m \cdot I(S) < m$. Dividing by $\gamma$ finishes the proof.
+\end{proof}
+
+% ==============================================================================
+\section{Oblivious Exact Unlearning (Proof of Theorem~\ref{thm:oblivious})}
+% ==============================================================================
+
+\begin{theorem}[Oblivious Exact Machine Unlearning for Dynamic Decision Trees]
+\label{thm:oblivious}
+Let $\beta \in (0, 1)$ and let $N \ge 2$ bound the active dataset size $|S_\tau| = n \le N$ at all steps. There exist strongly history-independent dynamic algorithms maintaining $T_\tau = T(S_\tau; R)$ such that:
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt]
+    \item \textbf{Exact $(0,0)$-Unlearning:} For every oblivious sequence of insertions and deletions, $T_\tau \approx_{0,0} \calA(S_\tau)$ at every step $\tau$.
+    \item \textbf{Deterministic Quality \& Query Time:} For every seed $R$, $T_\tau$ is deterministically a $\beta$-approximate decision tree for $S_\tau$ with worst-case height and prediction query time $O(\beta^{-1} \log n)$.
+\end{itemize}
+Moreover, per single-example insertion or deletion:
+\begin{enumerate}[label=(\alph*),leftmargin=1.8em,itemsep=2pt]
+    \item \textbf{Binary/Categorical Features ($\calX = \{0,1\}^d$):} Expected update time is $O\big(d \beta^{-2} \log^2 n \log(dN/\beta)\big)$ (independent of the number of classes $k$), using $O(nd)$ words of space for $k = O(1)$ (and $O(nd \min(k, \beta^{-1}))$ words for general $k$).
+    \item \textbf{Real-Valued Features ($\calX = \R^d$, with $k = O(1)$ classes):} Expected update time is
+    \[
+        O\Big(d \beta^{-3} \log n \log(dN/\beta) + d \beta^{-2} \log^2 n \log(dN/\beta)\Big),
+    \]
+    using $O(nd\beta^{-1})$ words of space.
+\end{enumerate}
+\end{theorem}
+
+\subsection{Part (a): Binary Features (\texorpdfstring{$\calX = \{0,1\}^d$}{X = \{0,1\}\^{}d})}
+
+\paragraph{Canonical Tree Definition $T(S; R)$.}
+Identify each potential node in a binary decision tree by its root-to-node path descriptor $p \in (\Pi(\calX) \times \{L, R\})^*$. Using a random seed $R$ initialized at $\tau = 0$ (modeled as independent random variables indexed by path $p$, generated on the fly via pseudorandom functions in the standard random-oracle/PRF model or lazy hash tables), assign to each path $p$ and candidate $c \in [d] \cup \{\bot\}$ an independent perturbation
+\[
+    \xi_{p, c} := \clip\Big(\tilde{\xi}_{p, c}, \, \big[-\tfrac{\beta}{8}, \, +\tfrac{\beta}{8}\big]\Big), \qquad \tilde{\xi}_{p, c} \stackrel{\text{i.i.d.}}{\sim} \Gumbel(0, \lambda), \qquad \lambda := \frac{\beta}{32 \ln(4 d N^2)}.
+\]
+Given active multiset $S_p \subseteq S$ reaching path $p$ ($n_p = |S_p|$):
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt]
+    \item If $n_p \le 1$, $p$ is a leaf.
+    \item Otherwise, set $g_j(S_p) := G(S_p, \text{``}x_j = 0\text{''})$ for $j \in [d]$ and $g_\bot(S_p) := \frac{1}{2}\beta$, and select
+    \[
+        c^*(S_p; R) := \arg\max_{c \in [d] \cup \{\bot\}} \big(g_c(S_p) + \xi_{p, c}\big).
+    \]
+    If $c^* = \bot$, $p$ is a leaf; if $c^* = j^* \in [d]$, $p$ splits on $x_{j^*} = 0$ and recurses on $p_L = p \circ (j^*, L)$ and $p_R = p \circ (j^*, R)$.
+\end{itemize}
+
+\paragraph{Data Structure and Dynamic Maintenance.}
+At each active internal node $p$ of $T_\tau$, we store for each $j \in [d]$ and $b \in \{0, 1\}$: the count $m_{p, j, b} = |\{(x, y, i) \in S_p : x_j = b\}|$, a sparse dictionary of non-zero class counts $c_{p, j, b}[y]$, and the running sum of squares $Q_{p, j, b} = \sum_{y=1}^k c_{p, j, b}[y]^2$. At each leaf $\ell$, we store its active point set $S_\ell$, class counts, and a max-tracker for $\arg\max_y c_y(S_\ell)$. Note that updating $(x, y)$ at node $p$ modifies only $c_{p, j, x_j}[y]$ by $\pm 1$ and updates $Q_{p, j, x_j}$ in $O(1)$ time per feature ($O(d)$ across all features, independent of $k$), immediately yielding $g_j(S_p)$ for all $j \in [d]$ in $O(d)$ time.
+
+When an update $u_\tau$ inserts or deletes $z = (x, y, i)$:
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+    \item Trace $x$'s unique root-to-leaf path $p_0, p_1, \dots, p_h$ in $T_{\tau-1}$, updating the statistics of each $p_r$ in $O(d)$ time and recomputing $c^*(S'_{p_r}; R)$.
+    \item If no node along the path changes its decision $c^*$ (and leaf $p_h$ does not transition from $\bot$ to a split), update leaf $p_h$'s majority label in $O(1)$ time and terminate.
+    \item Otherwise, let $p_{r^*}$ be the \emph{shallowest} node along the path whose decision changes ($c^*(S'_{p_{r^*}}; R) \ne c^*(S_{p_{r^*}}; R)$). Collect $S'_{p_{r^*}}$ from the leaves of $T_{p_{r^*}}$ and rebuild $T_{p_{r^*}}(S'_{p_{r^*}}; R)$ top-down from scratch using the \textbf{smaller-to-larger (heavy-light) rule}: at each internal node $v$ in the rebuild, partition $S_v \to S_L \sqcup S_R$ along $x_{j^*}$ in $O(|S_v|)$ time; assume $|S_L| \le |S_R|$ without loss of generality, build $v_L$'s $d$-feature count tables by scanning $S_L$ in $O(d|S_L|)$ time, and obtain $v_R$'s count tables via subtraction ($c_{v_R, j, b} = c_{v, j, b} - c_{v_L, j, b}$, touching only classes present in $S_L$) in $O(d|S_L| + d)$ time.
+\end{enumerate}
+
+\begin{proof}[Proof of Theorem~\ref{thm:oblivious}(a)]
+\textbf{History Independence and $\beta$-Approximation.}
+By construction, at termination of step $\tau$, every node on $x$'s path (and every untouched off-path subtree, whose active set $S_q$ did not change) satisfies the recursive definition of $T(S_\tau; R)$, so $T_\tau = T(S_\tau; R) \approx_{0,0} \calA(S_\tau)$. Since $\xi_{p, c} \in [-\frac{\beta}{8}, \frac{\beta}{8}]$ deterministically:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt]
+    \item If $c^* = \bot$, then for all $j \in [d]$, $g_j(S_p) - \frac{\beta}{8} \le g_\bot + \frac{\beta}{8} = \frac{5}{8}\beta$, so $\OPT(S_p) \le \frac{3}{4}\beta < \beta$.
+    \item If $c^* = j^* \in [d]$, then $g_{j^*}(S_p) + \frac{\beta}{8} \ge g_\bot - \frac{\beta}{8} = \frac{3}{8}\beta \implies g_{j^*}(S_p) \ge \frac{1}{4}\beta$, and $g_{j^*}(S_p) + \frac{\beta}{8} \ge \OPT(S_p) - \frac{\beta}{8} \implies g_{j^*}(S_p) \ge \OPT(S_p) - \frac{1}{4}\beta \ge \OPT(S_p) - \beta$.
+\end{itemize}
+Applying Lemma~\ref{lem:potential} with $\gamma = \frac{1}{4}\beta$ gives $\operatorname{height}(T_\tau) \le \frac{8}{\beta}\ln n$, $|\calI(T_\tau)| \le n - 1$, and $\sum_{v \in \calI(T_\tau)} |S_v| < \frac{4}{\beta} n$. At each internal node $v$, storing $m_{v, j, b}$, $Q_{v, j, b}$, and at most $\min(k, |S_v|)$ non-zero class counts $c_{v, j, b}[y]$ per feature uses $O(d \min(k, |S_v|))$ words; summing over $v \in \calI(T_\tau)$ bounds total space by $O(nd)$ for $k = O(1)$ and by $O(nd \min(k, \beta^{-1}))$ for general $k$.
+
+\textbf{Static Subtree Rebuild Time.}
+In rebuilding $T_p$ on $n_p = |S'_p|$ examples, root initialization scans $S'_p$ in $O(d n_p)$ time. At each internal node $v \in \calI(T_p)$ ($|\calI(T_p)| < n_p$), choosing $c^*$ takes $O(d)$ time, partitioning $S_v$ on $x_{j^*}$ takes $O(|S_v|)$ time, and smaller-to-larger table construction takes $O(d|S_L| + d)$ time where $|S_L| \le |S_v|/2$. Every element of $S'_p$ lands in the smaller child $S_L$ at most $\log_2 n_p$ times across the entire rebuild, so $\sum_{v \in \calI(T_p)} d|S_L| \le d n_p \log_2 n_p$. Furthermore, by Lemma~\ref{lem:potential}, $\sum_{v \in \calI(T_p)} |S_v| < \frac{4}{\beta} n_p$. Hence rebuilding $T_p$ takes deterministic time
+\[
+    \mathsf{T}_{\mathrm{rebuild}}(n_p) = O\big(d n_p \log n_p + \beta^{-1} n_p\big).
+\]
+
+\textbf{Expected Update Time.}
+Fix step $\tau$ and the oblivious transition $S_{\tau-1} \to S_\tau$ ($|S_{\tau-1} \triangle S_\tau| = 1$). Tracing $x$'s path of length $h \le \frac{8}{\beta}\ln n$ takes deterministic time $O(d h) = O(d \beta^{-1} \log n)$. For each depth $r \ge 0$, let $p_r$ be the depth-$r$ path prefix followed by $x$ under the ancestor splits of $S_{\tau-1}$. Notice that the event ``$p_r$ is reached and is the shallowest node that flips'' depends on $(\xi_{p_{r'}, \cdot})_{r' < r}$ to determine $S_{p_r}$ and $S'_{p_r}$ ($|S_{p_r} \triangle S'_{p_r}| = 1$), which are \emph{independent} of $\xi_{p_r, \cdot}$! Conditioned on $S_{p_r}, S'_{p_r}$ with $m = \max(|S_{p_r}|, |S'_{p_r}|) \ge 2$:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt]
+    \item By Lemma~\ref{lem:gini}(3), $\|g(S_{p_r}) - g(S'_{p_r})\|_\infty < \frac{3}{m}$.
+    \item By Lemma~\ref{lem:gumbel} with $M = d + 1 \le 2d$, $\Delta = \frac{3}{m}$, $A = B = \frac{\beta}{8}$, and $\lambda = \frac{\beta}{32 \ln(4dN^2)}$:
+    \[
+        \Prob_{\xi_{p_r}}\big[c^*(S_{p_r}; R) \ne c^*(S'_{p_r}; R)\big] \le \frac{6}{\lambda m} + 2d \Big((4dN^2)^{-4} + \exp(-(4dN^2)^4)\Big) = O\left(\frac{\log(dN)}{\beta m}\right).
+    \]
+\end{itemize}
+Multiplying by $\mathsf{T}_{\mathrm{rebuild}}(m) = O(d m \log n + \beta^{-1} m)$, the factor $m$ cancels: expected rebuild work at depth $r$ is $O\big(d \beta^{-1} \log n \log(dN) + \beta^{-2}\log(dN)\big)$. Summing over at most $h \le O(\beta^{-1}\log n)$ depths along $x$'s path yields total expected update time $O\big(d \beta^{-2} \log^2 n \log(dN/\beta)\big)$.
+\end{proof}
+
+% ------------------------------------------------------------------------------
+\subsection{Part (b): Real-Valued Features (\texorpdfstring{$\calX = \R^d$}{X = R\^{}d})}
+% ------------------------------------------------------------------------------
+
+We first present the construction assuming distinct feature coordinates per coordinate $j$ (standard general position; Remark~\ref{rem:ties} immediately removes this assumption with identical bounds).
+
+\paragraph{MinHash Quantile Windows and Canonical Rule.}
+Set parameters
+\[
+    \lambda := \frac{\beta}{64 \ln(8 d N^3 / \beta)}, \qquad K := \left\lceil \frac{8}{\lambda} \right\rceil = \Theta\left(\frac{\log(dN/\beta)}{\beta}\right), \qquad B := 64 K.
+\]
+For each path $p$, seed $R$ provides:
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+    \item Independent hash priorities $\rho_R(p, j, z) \stackrel{\text{i.i.d.}}{\sim} \Unif[0, 1]$ for each feature $j \in [d]$ and canonicalized example $z$.
+    \item Independent clipped Gumbel perturbations $\xi_{p, c} = \clip(\tilde{\xi}_{p, c}, [-\frac{\beta}{8}, \frac{\beta}{8}])$ with $\tilde{\xi}_{p, c} \stackrel{\text{i.i.d.}}{\sim} \Gumbel(0, \lambda)$ for candidates $c \in ([d] \times [K-1]) \cup \{\bot\}$ (plus small-node midpoint indices when $n_p \le B$).
+\end{enumerate}
+
+Given active multiset $S_p$ of size $m = |S_p|$:
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt]
+    \item \textbf{Small-node regime ($m \le B$):} If $m \le 1$, $p$ is a leaf. For $2 \le m \le B$, let $x_{(1), j} < \dots < x_{(m), j}$ be the sorted $j$-th coordinates of $S_p$, consider all $d(m-1)$ exact rank cuts $\pi_{j, r} = \text{``}x_j \le x_{(r), j}\text{''}$ ($r \in [m-1]$) together with $\bot$ ($g_\bot = \frac{1}{2}\beta$), and select $\arg\max_c (G(S_p, c) + \xi_{p, c})$.
+    \item \textbf{Large-node regime ($m > B$):} For each $j \in [d]$ and $q \in \{1, \dots, K-1\}$, define the rank interval
+    \[
+        I_q(m) := \big[\ell_q(m), \, r_q(m)\big], \qquad \ell_q(m) := \left\lfloor \Big(q - \tfrac{1}{4}\Big)\frac{m}{K} \right\rfloor + 1, \quad r_q(m) := \left\lfloor \Big(q + \tfrac{1}{4}\Big)\frac{m}{K} \right\rfloor.
+    \]
+    Notice $r_q(m) < \ell_{q+1}(m)$, so $I_1(m), \dots, I_{K-1}(m)$ are pairwise disjoint subsets of $[m]$ of cardinality $|I_q(m)| \in \big[\frac{m}{2K} - 1, \frac{m}{2K} + 1\big]$. Let $W_{p, j, q}(S_p) \subseteq S_p$ be the elements at sorted $j$-ranks $I_q(m)$, and define window $(j,q)$'s canonical threshold as
+    \[
+        \tau_{p, j, q}(S_p; R) := z^*_j, \qquad z^* = \arg\min_{z \in W_{p, j, q}(S_p)} \rho_R(p, j, z).
+    \]
+    Evaluate $g_{j, q}(S_p) := G\big(S_p, \text{``}x_j \le \tau_{p, j, q}(S_p; R)\text{''}\big)$ alongside $g_\bot = \frac{1}{2}\beta$, and select
+    \[
+        c^*(S_p; R) := \arg\max_{c \in ([d] \times [K-1]) \cup \{\bot\}} \big(g_c(S_p) + \xi_{p, c}\big).
+    \]
+\end{itemize}
+
+\begin{lemma}[Softmax-Decoupled Flip Probability on $\R^d$]
+\label{lem:continuous_flip}
+Fix path $p$ and adjacent multisets $S_p, S'_p$ ($|S_p \triangle S'_p| = 1$) with $m = |S_p| > B + 1$ and $m' = |S'_p| > B$. Let $(c^*, \tau^*)$ and $(c'^*, \tau'^*)$ denote the canonical decisions (either $\bot$, or winning window $c^*$ together with its real threshold $\tau^* \in \R$) on $S_p$ and $S'_p$. Then
+\[
+    \Prob_{\rho_R, \xi_R}\big[(c^*, \tau^*) \ne (c'^*, \tau'^*)\big] \le O\left(\frac{\log(dN/\beta)}{\beta m}\right).
+\]
+\end{lemma}
+
+\begin{proof}
+Let $\calC = ([d] \times [K-1]) \cup \{\bot\}$ ($|\calC| \le dK$). By Lemma~\ref{lem:gumbel}'s tail bound and our choice of $\lambda = \frac{\beta}{64 \ln(8dN^3/\beta)}$, the clipping event $\calG = \{\forall c \in \calC : \xi_{p,c} = \tilde{\xi}_{p,c}\}$ fails with probability $\Prob[\neg\calG] \le \frac{1}{N^3} \ll \frac{1}{m}$, so we may work directly with unclipped $\tilde{\xi}_{p,c} \stackrel{\text{i.i.d.}}{\sim} \Gumbel(0, \lambda)$.
+
+For each $c = (j, q) \in [d] \times [K-1]$, let $\tau_c(\rho) = \tau_{p,j,q}(S_p; R)$ and $\tau'_c(\rho) = \tau_{p,j,q}(S'_p; R)$, with $\tau_\bot \equiv \bot$. Define the deterministic ($\rho$-free and $\tilde{\xi}$-free) extreme gains over window $c$:
+\[
+    m_c := \min_{z \in W_c(S_p) \cup W_c(S'_p)} \min\big(G(S_p, \text{``}x_j \le z_j\text{''}), \, G(S'_p, \text{``}x_j \le z_j\text{''})\big),
+\]
+and analogously $M_c$ with $\max$, setting $m_\bot = M_\bot := \frac{1}{2}\beta$. Any two elements $z, z' \in W_c(S_p) \cup W_c(S'_p)$ have $S_p$-ranks within $[\ell_q(m) - 1, r_q(m) + 1]$ (differing by at most $\frac{m}{2K} + 3$ points). By Lemma~\ref{lem:gini}(3)--(4) and $m > B = 64K \ge \frac{512}{\lambda}$,
+\[
+    M_c - m_c \le \frac{2\big(\frac{m}{2K} + 3\big)}{m} + \frac{3}{m} = \frac{1}{K} + \frac{9}{m} \le \frac{\lambda}{8} + \frac{\lambda}{8} = \frac{\lambda}{4}.
+\]
+
+On $\calG$, if $(c^*, \tau^*) \ne (c'^*, \tau'^*)$, at least one of two events occurs:
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+    \item \textbf{Event $\calF_1$ (A jumping window wins on $S_p$ or $S'_p$):} There exists $c = (j, q)$ such that $\calE_c(\rho) := \{\tau_c(\rho) \ne \tau'_c(\rho)\}$ holds \emph{and} $c \in \{c^*, c'^*\}$. Since $g_c \le M_c$ and $g_{c'} \ge m_{c'}$ for all $c'$, $c \in \{c^*, c'^*\}$ implies the $\rho$-independent event $\calW_c(\tilde{\xi}) := \{M_c + \tilde{\xi}_c \ge \max_{c' \in \calC} (m_{c'} + \tilde{\xi}_{c'})\}$. By the Gumbel-Max probability formula,
+    \[
+        \Prob_{\tilde{\xi}}[\calW_c(\tilde{\xi})] = \frac{e^{M_c / \lambda}}{e^{M_c/\lambda} + \sum_{c' \ne c} e^{m_{c'}/\lambda}} \le \frac{e^{M_c/\lambda}}{\sum_{c' \in \calC} e^{m_{c'}/\lambda}} \le e^{1/4} \frac{e^{m_c/\lambda}}{\sum_{c' \in \calC} e^{m_{c'}/\lambda}}.
+    \]
+    Moreover, inserting/deleting 1 point shifts $\ell_q, r_q$ by at most $1$, so $|W_c(S_p) \triangle W_c(S'_p)| \le 3$, whereas $|W_c(S_p) \cup W_c(S'_p)| \ge \frac{m}{2K} - 1 \ge \frac{m}{4K}$. Because $\rho_R(p, j, z)$ are i.i.d.\ uniform, the minimum priority in $W_c(S_p) \cup W_c(S'_p)$ lands in the symmetric difference with probability $\Prob_\rho[\calE_c(\rho)] \le \frac{3}{m/(4K)} = \frac{12K}{m}$. Using independence of $\rho$ and $\tilde{\xi}$:
+    \[
+        \Prob_{\rho, \tilde{\xi}}[\calF_1] \le \sum_{c \in [d]\times[K-1]} \Prob_\rho[\calE_c(\rho)] \cdot \Prob_{\tilde{\xi}}[\calW_c(\tilde{\xi})] \le \frac{12K}{m} e^{1/4} \sum_{c \in \calC} \frac{e^{m_c/\lambda}}{\sum_{c'} e^{m_{c'}/\lambda}} = \frac{12 e^{1/4} K}{m}.
+    \]
+    \item \textbf{Event $\calF_2$ (Winner switches among non-jumping candidates):} Condition on any $\rho$, and let $U(\rho) := \{c \in \calC : \tau_c(\rho) = \tau'_c(\rho)\}$ ($\bot \in U(\rho)$). Whenever $\calF_1$ does not occur, both $c^*$ and $c'^*$ belong to $U(\rho)$, so they equal the $\arg\max$ restricted to $U(\rho)$ on $S_p$ and $S'_p$, respectively. For every $c \in U(\rho)$, $\tau_c(\rho) = \tau'_c(\rho)$ is a single fixed threshold, so $|g_c(S_p) - g_c(S'_p)| < \frac{3}{m}$ by Lemma~\ref{lem:gini}(3). Applying Lemma~\ref{lem:gumbel} on $U(\rho)$ conditioned on $\rho$ (since $\tilde{\xi}$ is independent of $\rho$) gives $\Prob_{\tilde{\xi}}[\calF_2 \setminus \calF_1 \mid \rho] \le \frac{6}{\lambda m} \le \frac{6K}{m}$.
+\end{enumerate}
+Summing $\Prob[\neg\calG] + \Prob[\calF_1] + \Prob[\calF_2 \setminus \calF_1] \le \frac{1}{N^3} + \frac{(12 e^{1/4} + 6)K}{m} = O\big(\frac{\log(dN/\beta)}{\beta m}\big)$ completes the proof.
+\end{proof}
+
+\begin{remark}[Handling Arbitrary Coordinate Ties in $\R^d$]
+\label{rem:ties}
+If multiple examples share an identical feature value $x_j = v$, sort $S_p$ canonically by $(x_j, y, \text{copy\_idx})$ to form $W_{p,j,q}(S_p)$, let $z^* = \arg\min_{z \in W_{p,j,q}} \rho_R(p, j, z)$, and define window $(j,q)$'s split predicate solely from the real value $v = z^*_j$ and window center $\mu_q = q\frac{m}{K}$ as ``$x_j \le v$'' if $|r^+(v) - \mu_q| \le |r^-(v) - \mu_q| + \theta^{\text{tie}}_{p,j,q}$ and ``$x_j < v$'' otherwise (where $r^-(v) = |\{u : u_j < v\}|$, $r^+(v) = |\{u : u_j \le v\}|$, and $\theta^{\text{tie}}_{p,j,q} \sim \Unif[-w/4, w/4]$). Whenever $x_{(\ell_q), j} < x_{(r_q), j}$, no tie-block can strictly contain $I_q$, ensuring $|S_L(\pi)| \in [\mu_q - 2w, \mu_q + 2w]$ across all $z \in I_q$; whenever $x_{(\ell_q), j} = x_{(r_q), j} = v$, every $z \in I_q$ has the exact same coordinate $v$, giving zero intra-window variation and preserving Lemma~\ref{lem:continuous_flip} verbatim.
+\end{remark}
+
+\begin{proof}[Proof of Theorem~\ref{thm:oblivious}(b)]
+\textbf{Quality and Space.}
+For any threshold $\pi^*$ on $S_p$ ($m > B$), either $|S_L(\pi^*)| \le \frac{m}{K}$ (so $G(S_p, \pi^*) < \frac{2}{K} \le \frac{\lambda}{4} < \frac{\beta}{4}$ by Lemma~\ref{lem:gini}(2)), $|S_R(\pi^*)| \le \frac{m}{K}$ (likewise), or $|S_L(\pi^*)|$ lies within $\frac{3m}{4K}$ of every rank in $I_q(m)$ for $q = \operatorname{round}(|S_L(\pi^*)| K / m) \in [K-1]$, giving $|G(S_p, \pi^*) - g_{j, q}(S_p)| \le \frac{3}{2K} < \frac{\beta}{4}$. Combined with $\xi_{p, c} \in [-\frac{\beta}{8}, \frac{\beta}{8}]$ and $g_\bot = \frac{1}{2}\beta$, leaves satisfy $\OPT(S_p) \le \frac{3}{4}\beta + \frac{\beta}{4} = \beta$, and internal splits satisfy $g_{c^*} \ge \frac{1}{4}\beta$ and $g_{c^*} \ge \OPT(S_p) - \frac{1}{2}\beta \ge \OPT(S_p) - \beta$.
+
+At each internal node $v$ with $n_v > B$, we maintain $d$ augmented balanced binary search trees (e.g., red-black trees) $\calB_{v, 1}, \dots, \calB_{v, d}$ over $S_v$; each BST node stores subtree size, the $k$-tuple of subtree class counts ($k = O(1)$), and the subtree minimum of $\rho_R(v, j, z)$. By Lemma~\ref{lem:potential} ($\gamma = \frac{1}{4}\beta$), total space across the entire tree is $O\big(\sum_{v \in \calI(T)} d |S_v| + nd\big) = O(nd\beta^{-1})$.
+
+\textbf{Static Subtree Rebuild Time.}
+To rebuild $T_p$ on $n_p = |S'_p|$ points: pre-sort $S'_p$ along each of the $d$ coordinates once at $p$ in $O(d n_p \log n_p)$ time. At each internal node $v \in \calI(T_p)$ receiving $d$ sorted arrays of length $n_v$: build balanced static/red-black trees $\calB_{v, j}$ from the sorted arrays in $O(d n_v)$ linear time, compute all prefix class counts and window minima in a single $O(d n_v)$ linear scan to select $(c^*, \tau^*)$, and filter the $d$ sorted arrays into left and right sub-arrays in $O(d n_v)$ time. By Lemma~\ref{lem:potential}, $\sum_{v \in \calI(T_p)} d n_v < \frac{4}{\beta} d n_p$, so
+\[
+    \mathsf{T}_{\mathrm{rebuild}}(n_p) = O\big(d n_p \log n_p + d \beta^{-1} n_p\big).
+\]
+
+\textbf{Expected Update Time.}
+When inserting or deleting $z = (x, y, i)$:
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt]
+    \item Along $x$'s path of height $h \le \frac{8}{\beta}\ln n$, at each ancestor $p$ with $n_p > B + 1$, updating $\calB_{p, 1}, \dots, \calB_{p, d}$ takes $O(d \log n_p)$ time, and querying the $K - 1$ rank-interval minima and prefix class counts in each $\calB_{p, j}$ takes $O(d K \log n_p)$ time. Across all $h$ ancestors, deterministic verification costs $O(h \cdot d K \log n) = O\big(d \beta^{-2} \log^2 n \log(dN/\beta)\big)$.
+    \item If the path reaches an ancestor $p$ with $n_p \le B + 1$, rebuilding the shallowest such $T_p$ deterministically costs $\mathsf{T}_{\mathrm{rebuild}}(B+1) = O\big(d B (\log B + \beta^{-1})\big) = O\big(d \beta^{-2} \log(dN/\beta)\big)$---and terminates the path!
+    \item For each ancestor $p$ with $m = \max(|S_p|, |S'_p|) > B + 1$, Lemma~\ref{lem:continuous_flip} bounds the flip probability by $O\big(\frac{\log(dN/\beta)}{\beta m}\big)$ (because non-flipping ancestors above $p$ preserve exact thresholds $\tau_{p'}$, so no other points move into or out of $S_p$!). Multiplying by $\mathsf{T}_{\mathrm{rebuild}}(m) = O(d m (\log n + \beta^{-1}))$ yields $O\big(d \beta^{-2}\log(dN/\beta)(\beta\log n + 1)\big)$ expected work per ancestor; summing over $h \le O(\beta^{-1}\log n)$ ancestors proves Theorem~\ref{thm:oblivious}(b).
+\end{itemize}
+\end{proof}
+
+% ==============================================================================
+\section{Adaptive Adversaries (Proofs of Theorems~\ref{thm:lower} and~\ref{thm:adaptive})}
+% ==============================================================================
+
+\subsection{Impossibility Under Per-Step Full-Tree Publishing}
+
+When the adversary observes the explicit tree $T_{\tau-1}$ at every step ($\psi_{\tau-1} = T_{\tau-1}$): (i) on $\R^d$, observing $\tau_p = z^*_j$ identifies the MinHash winner $z^*$, allowing $\mathsf{delete}(z^*)$ to force a root rebuild with probability $1$ on every step; and (ii) even on $\{0,1\}^d$, $O(\log n)$ adaptive updates suffice to binary-search $\xi_{\text{root}, 1} - \xi_{\text{root}, 2}$ to precision $1/n$ and force $\Omega(dn)$ rebuilds forever. Worse still, we now show that \emph{no} dynamic algorithm (regardless of how it manages internal randomness) can achieve $(\varepsilon, \delta)$-adaptive unlearning without constant-probability root flips.
+
+\begin{theorem}[Adaptive Lower Bound Under Explicit Tree Publishing]
+\label{thm:lower}
+Let $\varepsilon \ge 0$ and $\delta \in [0, \frac{1}{8}]$. Let $\calA$ be any static randomized algorithm outputting $\beta$-approximate decision trees, and let $\calD$ be any dynamic algorithm that initializes $T_1 \sim \calA(S_1)$ on an initial dataset $S_1$, publishes $T_\tau$ after each update ($\psi_\tau = T_\tau$), and satisfies $(\varepsilon, \delta)$-adaptive unlearning with respect to $\calA$.
+\begin{enumerate}[label=(\alph*),leftmargin=1.8em,itemsep=2pt]
+    \item For every $\beta \in (0, \frac{1}{2})$, even on $d = 2$ binary features, binary labels ($k = 2$), and datasets of any size $n = 8m \ge 8$, there exists an adaptive 1-deletion adversary (making a single deletion $S_2 = S_1 \setminus \{z\}$ after observing $T_1$) that forces
+    \[
+        \Prob\big[\operatorname{root}(T_2) \ne \operatorname{root}(T_1)\big] \ge \frac{\frac{1}{4} - \delta}{e^\varepsilon} \ge \frac{1}{8 e^\varepsilon}.
+    \]
+    \item For binary labels ($k = 2$), $d = 2 + 2s = \Theta(\log n)$ binary features, and $\beta = \frac{1}{512(s+1)^2} = \Theta\big(\frac{1}{\log^2 n}\big)$, a single adaptive deletion forces any $(\varepsilon, \delta)$-adaptive unlearner to modify $\Omega\big(\frac{n}{\log^3 n} e^{-\varepsilon}\big) = \tilde{\Omega}(n e^{-\varepsilon})$ syntactic internal nodes in expectation (and $\Omega(n e^{-\varepsilon})$ leaf-set example assignments if leaf partitions are maintained).
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+\textbf{(a)} Let $n = 8m$ ($m \ge 1$). Construct two multisets $D_0, D_{\mathrm{end}} \subseteq \{0,1\}^2 \times \{0,1\}$ of size $8m$:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt]
+    \item $D_0$ consists of $2m$ copies of each of $(0,0,0), (0,1,0), (1,0,1), (1,1,1)$ (so $y = x_1$ and $x_2 \perp y$). Here $G(D_0, 1) = \frac{1}{2}$ and $G(D_0, 2) = 0$. Since $\beta < \frac{1}{2}$, every $\beta$-approximate tree on $D_0$ must split its root on Feature~1; setting $p(S) := \Prob[\operatorname{root}(\calA(S)) = 1]$ (where $\operatorname{root}(T) \in \{1, 2, \bot\}$), we have $p(D_0) = 1$.
+    \item $D_{\mathrm{end}}$ consists of $2m$ copies of each of $(0,0,0), (1,0,0), (0,1,1), (1,1,1)$ (so $y = x_2$ and $x_1 \perp y$), giving $G(D_{\mathrm{end}}, 1) = 0$, $G(D_{\mathrm{end}}, 2) = \frac{1}{2}$, and $p(D_{\mathrm{end}}) = 0$.
+\end{itemize}
+Notice that $D_0$ and $D_{\mathrm{end}}$ share $2m$ copies of $x^{**} := (0,0,0)$ and $2m$ copies of $(1,1,1)$, differing only on $4m$ examples in $\{(0,1,0), (1,0,1), (1,0,0), (0,1,1)\}$. Form a sequence $S^{(0)} = D_0, S^{(1)}, \dots, S^{(8m)} = D_{\mathrm{end}}$ by alternating single-example deletions from $D_0 \setminus D_{\mathrm{end}}$ and single-example insertions from $D_{\mathrm{end}} \setminus D_0$. Note that every $S^{(r)}$ contains $x^{**} = (0,0,0)$, while every inserted/deleted element $z$ along the walk satisfies $z \ne x^{**}$.
+
+Let $r^* \in \{0, \dots, 8m-1\}$ be the first index with $p(S^{(r^*+1)}) < \frac{1}{2}$, so $p(S^{(r^*)}) \ge \frac{1}{2}$. Let $S_{\mathrm{big}}$ be the larger of $\{S^{(r^*)}, S^{(r^*+1)}\}$ and $S_{\mathrm{small}} = S_{\mathrm{big}} \setminus \{z^*\}$ be the smaller (where $z^* \ne x^{**}$). Define the root event $A := \{1\}$ if $S_{\mathrm{big}} = S^{(r^*)}$, and $A := \{2, \bot\}$ if $S_{\mathrm{big}} = S^{(r^*+1)}$. In both cases,
+\[
+    \Prob\big[\operatorname{root}(\calA(S_{\mathrm{big}})) \in A\big] \ge \frac{1}{2} \qquad \text{and} \qquad \Prob\big[\operatorname{root}(\calA(S_{\mathrm{small}})) \notin A\big] \ge \frac{1}{2}.
+\]
+Initialize $S_1 := S_{\mathrm{big}}$ ($T_1 \sim \calA(S_1)$), and run the following 1-deletion adaptive adversary upon observing $T_1$:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt]
+    \item If $\operatorname{root}(T_1) \in A$, issue $\mathsf{delete}(z^*)$, yielding $S_2 = S_{\mathrm{small}}$.
+    \item If $\operatorname{root}(T_1) \notin A$, issue $\mathsf{delete}(x^{**})$, yielding $S_2 = S_{\mathrm{big}} \setminus \{x^{**}\} \ne S_{\mathrm{small}}$ (since $z^* \ne x^{**}$).
+\end{itemize}
+Consider the joint measurable event $E := \{(S, T) : S = S_{\mathrm{small}} \text{ and } \operatorname{root}(T) \notin A\}$:
+\begin{enumerate}[leftmargin=1.5em,itemsep=1pt]
+    \item Under the ideal retrain distribution $(S_2, \calA(S_2))$, $S_2 = S_{\mathrm{small}}$ iff $\operatorname{root}(T_1) \in A$ (probability $\ge \frac{1}{2}$), and conditioned on $S_2 = S_{\mathrm{small}}$, fresh $\calA(S_{\mathrm{small}})$ satisfies $\operatorname{root} \notin A$ with probability $\ge \frac{1}{2}$. Hence $\Prob[(S_2, \calA(S_2)) \in E] \ge \frac{1}{4}$.
+    \item Under the dynamic algorithm $(S_2, T_2)$, $(S_2, T_2) \in E$ implies $S_2 = S_{\mathrm{small}}$ (hence $\operatorname{root}(T_1) \in A$) and $\operatorname{root}(T_2) \notin A$, which forces $\operatorname{root}(T_2) \ne \operatorname{root}(T_1)$.
+\end{enumerate}
+Applying $(S_2, \calA(S_2)) \approx_{\varepsilon, \delta} (S_2, T_2)$ to $E$ yields
+\[
+    \frac{1}{4} \le \Prob\big[(S_2, \calA(S_2)) \in E\big] \le e^\varepsilon \Prob\big[(S_2, T_2) \in E\big] + \delta \le e^\varepsilon \Prob\big[\operatorname{root}(T_2) \ne \operatorname{root}(T_1)\big] + \delta,
+\]
+proving Part~(a). (Note: even if $T_1$ is built dynamically from $\emptyset$ rather than initialized via $\calA(S_1)$, $(\varepsilon, \delta)$-unlearning at $\tau = 1$ gives $\Prob[\operatorname{root}(T_1) \in A] \ge e^{-\varepsilon}(\frac{1}{2} - \delta)$, yielding $\Omega(e^{-2\varepsilon})$ for $\delta \le \frac{1}{8}e^{-\varepsilon}$.)
+
+\textbf{(b)} Let $s \ge 3$, $M_0 := 8(s+1)$, and $B_{\mathrm{copies}} := 8192(s+1)^2$. Over $d = 2 + 2s$ binary features $(x_1, x_2, u, v) \in \{0,1\} \times \{0,1\} \times \{0,1\}^s \times \{0,1\}^s$ and binary labels $y \in \{0,1\}$, define $q(u) := \frac{3 + 8\sum_{i=1}^s u_i}{8(s+1)} \in (0, 1)$, whose average over $u \in \{0,1\}^s$ is $\frac{1}{2} - \frac{1}{8(s+1)}$. Let $D_0^{\mathrm{base}}$ ($|D_0^{\mathrm{base}}| = 4 M_0 2^s$) place $M_0$ examples at each $(x_1, x_2, u, \mathbf{0})$, with $y=1$ fraction $q(u)$ when $x_1 = 0$ and $1 - q(u)$ when $x_1 = 1$; define $D_{\mathrm{end}}^{\mathrm{base}}$ symmetrically by swapping $(x_1, u) \leftrightarrow (x_2, v)$, and set $D_0$ (resp.\ $D_{\mathrm{end}}$) to be $B_{\mathrm{copies}}$ copies of $D_0^{\mathrm{base}}$ (resp.\ $D_{\mathrm{end}}^{\mathrm{base}}$), of total size $n = 32 B_{\mathrm{copies}} (s+1) 2^s = \Theta(2^s \log^3 n)$. Note that $x^{**} := ((0,0,\mathbf{0},\mathbf{0}), 1) \in D_0 \cap D_{\mathrm{end}}$.
+
+Transition from $D_0$ to $D_{\mathrm{end}}$ one base copy at a time via single-example deletions and insertions (never touching $x^{**}$). Every intermediate $S^{(r)}$ differs from an exact convex combination $S_\alpha = (1 - \alpha) D_0 + \alpha D_{\mathrm{end}}$ ($\alpha \in [0, 1]$) in at most $|D_0^{\mathrm{base}}| = \frac{n}{B_{\mathrm{copies}}}$ points, perturbing any root or depth-1 Gini gain by at most $\frac{12}{B_{\mathrm{copies}}} < \frac{0.0015}{(s+1)^2}$ by Lemma~\ref{lem:gini}(3). Using the binary-label identity $G = 2 w_L w_R (p_R - p_L)^2$:
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt]
+    \item \emph{At the root:} On $S_\alpha$, $G(S_\alpha, u_i) = G(S_\alpha, v_i) = 0$ (since $q(u) + (1 - q(u)) = 1$ cancels across $x_1 \in \{0,1\}$), whereas $G(S_\alpha, x_1) = \frac{(1-\alpha)^2}{32(s+1)^2}$ and $G(S_\alpha, x_2) = \frac{\alpha^2}{32(s+1)^2}$. For $\beta = \frac{1}{512(s+1)^2} \approx \frac{0.00195}{(s+1)^2}$, every $\beta$-approximate tree on every $S^{(r)}$ must split its root on $\{x_1, x_2\}$, and the crossing index $r^*$ in Part~(a) must satisfy $\alpha \in [\frac{1}{4}, \frac{3}{4}]$.
+    \item \emph{Inside subtrees at $r^*$ ($\alpha \in [\frac{1}{4}, \frac{3}{4}]$):} Suppose $\operatorname{root}(T) = x_1$. On $S_\alpha|_{x_1=0}$, each $u_i$ has $w_R = \frac{1-\alpha}{2} \ge \frac{1}{8}$ and $p_R - p_{\mathrm{avg}} = \frac{4-\alpha}{8(s+1)} > \frac{3}{8(s+1)}$, giving $G(S_\alpha|_{x_1=0}, u_i) > \frac{9}{224(s+1)^2} > \frac{0.040}{(s+1)^2}$, whereas $G(S_\alpha|_{x_1=0}, x_2) \le \frac{(3/4)^2}{32(s+1)^2} < \frac{0.018}{(s+1)^2}$ and $G(S_\alpha|_{x_1=0}, v_i) = 0$. Including the $< \frac{0.0015}{(s+1)^2}$ single-copy perturbation, depth~1 must split on some $u_{i_1} \in \{u_1, \dots, u_s\}$. On the branch $u_{i_1} = 1$, all points from $D_{\mathrm{end}}$ vanish (as $u = \mathbf{0}$ on $D_{\mathrm{end}}$), leaving $\ge \frac{1}{4} B_{\mathrm{copies}}$ intact copies of $D_0^{\mathrm{base}}$ where every remaining $u_j$ has gain $\approx \frac{1}{2(s+1)^2} \gg \beta$ down to depth $s$, while $x_2$ and $v_1, \dots, v_s$ have gain $< \frac{0.0015}{(s+1)^2}$.
+\end{itemize}
+Thus any $\beta$-approximate tree with $\operatorname{root}(T) = x_1$ contains at least $2^{s-1} - 1 = \Omega\big(\frac{n}{\log^3 n}\big)$ internal splits on $\{u_1, \dots, u_s\}$ (and routes $\Omega(n)$ examples into $u$-refined leaves), whereas any $\beta$-approximate tree with $\operatorname{root}(T) = x_2$ splits analogously on $\{v_1, \dots, v_s\}$ (with zero splits on $\{u_1, \dots, u_s\}$ along $v_{i_1} = 1$). Combining with Part~(a) yields $\Omega\big(\frac{n}{\log^3 n} e^{-\varepsilon}\big)$ expected syntactic node modifications (and $\Omega(n e^{-\varepsilon})$ expected leaf-assignment updates).
+\end{proof}
+
+% ------------------------------------------------------------------------------
+\subsection{Adaptive Upper Bound: Seed-DP Random Forests}
+% ------------------------------------------------------------------------------
+
+We now prove our self-contained neighbor-DP-to-max-information reduction and combine it with Theorem~\ref{thm:oblivious}.
+
+\begin{lemma}[Neighbor-DP on Seed Tuples Implies Single-Seed Max-Information]
+\label{lem:maxinfo}
+Let $\mathbf{R} = (R^{(1)}, \dots, R^{(L)}) \sim \calD_R^{\otimes L}$ be $L$ i.i.d.\ random seeds, and let $\calM(\mathbf{R})$ be an interactive mechanism (modeling the entire adaptive adversary transcript, including $S_\tau$) that is $(\varepsilon', \delta')$-differentially private with respect to replacing a \emph{single} coordinate $R^{(\ell)} \to \tilde{R}^{(\ell)}$ of $\mathbf{R}$. Then for \emph{every} $\ell \in [L]$, comparing the true joint distribution to an independent fresh draw $R' \sim \calD_R$:
+\[
+    \big(R^{(\ell)}, \, \calM(\mathbf{R})\big) \approx_{\varepsilon', \delta'} R' \otimes \calM(\mathbf{R}).
+\]
+\end{lemma}
+
+\begin{proof}
+Fix $\ell \in [L]$ and define the marginalized single-input mechanism $\calM_\ell(r) := \calM(R^{(1)}, \dots, r, \dots, R^{(L)})$ where $R^{(-\ell)} \sim \calD_R^{\otimes (L-1)}$. For \emph{every} pair of seed values $r, r'$ and every fixed draw of $R^{(-\ell)}$, the tuples $(r, R^{(-\ell)})$ and $(r', R^{(-\ell)})$ differ in at most one coordinate, so by single-coordinate $(\varepsilon', \delta')$-DP of $\calM$:
+\[
+    \forall r, r', \, \forall \text{ event } E: \quad \Prob[\calM_\ell(r) \in E] = \E_{R^{(-\ell)}}\big[\Prob[\calM(r, R^{(-\ell)}) \in E]\big] \le e^{\varepsilon'} \Prob[\calM_\ell(r') \in E] + \delta'.
+\]
+Now let $W$ be any joint measurable event of $(R^{(\ell)}, \calM(\mathbf{R}))$, and let $W_r := \{o : (r, o) \in W\}$ be its $r$-slice. Averaging the inequality above over $r' \sim \calD_R$ and then over $r \sim \calD_R$ gives
+\begin{align*}
+    \Prob\big[(R^{(\ell)}, \calM(\mathbf{R})) \in W\big] &= \E_{r \sim \calD_R}\big[\Prob[\calM_\ell(r) \in W_r]\big] \\
+    &\le e^{\varepsilon'} \E_{r, r' \stackrel{\text{i.i.d.}}{\sim} \calD_R}\big[\Prob[\calM_\ell(r') \in W_r]\big] + \delta' = e^{\varepsilon'} \Prob\big[(R', \calM(\mathbf{R})) \in W\big] + \delta'.
+\end{align*}
+Symmetrically, averaging $\Prob[\calM_\ell(r') \in W_r] \le e^{\varepsilon'} \Prob[\calM_\ell(r) \in W_r] + \delta'$ over $r, r' \stackrel{\text{i.i.d.}}{\sim} \calD_R$ gives the reverse inequality $\Prob[(R', \calM(\mathbf{R})) \in W] \le e^{\varepsilon'}\Prob[(R^{(\ell)}, \calM(\mathbf{R})) \in W] + \delta'$.
+\end{proof}
+
+\begin{lemma}[Self-Contained Laplace Report-Noisy-Max and Adaptive Composition]
+\label{lem:composition}
+Consider an adaptive sequence of $Q$ prediction queries interacting with $\mathbf{R} = (R^{(1)}, \dots, R^{(L)})$. On query $t \in [Q]$ with test point $x_q^{(t)}$, let $V_y^{(t)}(\mathbf{R}) = \sum_{\ell=1}^L \mathbf{1}[T(S_{\tau_t}; R^{(\ell)})(x_q^{(t)}) = y]$ for $y \in [k]$, sample $\eta_{t, y} \stackrel{\text{i.i.d.}}{\sim} \Lap(b)$, and output $\hat{y}_t = \arg\max_{y \in [k]} (V_y^{(t)}(\mathbf{R}) + \eta_{t, y})$.
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+    \item \textbf{Per-Query Accuracy:} If the plurality class beats all other classes by margin $\gamma L$ ($\gamma \in (0, 1]$), then $\hat{y}_t$ equals the true plurality class with probability $\ge 1 - \delta_q$ provided $b \le \frac{\gamma L}{4 \ln(k/\delta_q)}$.
+    \item \textbf{Single-Query Neighbor Privacy:} Each query $\hat{y}_t$ is pure $\varepsilon_0$-DP with respect to changing a single seed $R^{(\ell)}$, for $\varepsilon_0 = \frac{2}{b}$.
+    \item \textbf{Adaptive $Q$-Fold Composition:} Across $Q$ adaptive queries:
+    \begin{itemize}[leftmargin=1.2em]
+        \item \emph{(Pure, $\delta'=0$):} The transcript is $(\varepsilon', 0)$-DP w.r.t.\ each $R^{(\ell)}$ for $\varepsilon' = Q \varepsilon_0$.
+        \item \emph{(Approximate, $\delta' > 0$):} For any $\delta' \in (0, 1)$ and $\varepsilon_0 > 0$, the transcript is $(\varepsilon', \delta')$-DP w.r.t.\ each $R^{(\ell)}$ for $\varepsilon' = \frac{1}{2} Q \varepsilon_0^2 + \varepsilon_0 \sqrt{2 Q \ln(1/\delta')}$.
+    \end{itemize}
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}
+\textbf{(1)} Since $\Prob[|\eta_{t, y}| > u] = e^{-u/b}$, a union bound over $y \in [k]$ gives $\Prob[\max_y |\eta_{t,y}| > \gamma L / 4] \le k \exp(-\frac{\gamma L}{4b}) \le \delta_q$; whenever $\max_y |\eta_{t,y}| \le \gamma L / 4$, the plurality class remains strictly largest.
+
+\textbf{(2)} Fix all seeds except $R^{(\ell)}$, and replace $R^{(\ell)} \to \tilde{R}^{(\ell)}$; this changes $V_{y^*}$ by at most $-1$ on one class and $+1$ on another, so $|V_y - \tilde{V}_y| \le 1$ for all $y \in [k]$. Fix any target class $r \in [k]$ and condition on the $k-1$ noises $\eta_{-r} = (\eta_{t, y})_{y \ne r}$. Class $r$ wins on $V$ iff $\eta_{t, r} > \mu(V) := \max_{y \ne r} (V_y + \eta_{t, y}) - V_r$. Since $|\mu(V) - \mu(\tilde{V})| \le 2$ and the Laplace tail $H(u) = \Prob[\eta_{t,r} > u]$ satisfies $H(u - 2) \le e^{2/b} H(u)$ for all $u \in \R$ (as the density ratio is bounded by $e^{2/b}$ everywhere), integrating over $\eta_{-r}$ gives $\Prob[\hat{y}_t(V) = r] \le e^{2/b} \Prob[\hat{y}_t(\tilde{V}) = r]$.
+
+\textbf{(3)} Pure $Q\varepsilon_0$-composition follows immediately from the chain rule of conditional probabilities. For $\delta' \in (0, 1)$, let $P$ and $\tilde{P}$ denote the $Q$-query transcript laws under $\mathbf{R}$ and $\tilde{\mathbf{R}}$, and let $Y_t := \ln \frac{P(\hat{y}_t \mid \hat{y}_{<t})}{\tilde{P}(\hat{y}_t \mid \hat{y}_{<t})}$. By Part~(2), $Y_t \in [-\varepsilon_0, +\varepsilon_0]$ almost surely (conditional range width $2\varepsilon_0$). Recall Hoeffding's lemma: any random variable $W \in [-\varepsilon_0, \varepsilon_0]$ satisfies $\E[e^{\theta(W - \E W)}] \le e^{\theta^2 \varepsilon_0^2 / 2}$ for all $\theta \in \R$. First, applying Hoeffding's lemma with $\theta = -1$ to $Y_t$ conditioned on $\hat{y}_{<t}$ (noting $\E_P[e^{-Y_t} \mid \hat{y}_{<t}] = \sum_y \tilde{P}(y \mid \hat{y}_{<t}) = 1$) gives
+\[
+    1 = \E_P\big[e^{-Y_t} \mid \hat{y}_{<t}\big] \le \exp\Big(-\E_P[Y_t \mid \hat{y}_{<t}] + \tfrac{1}{2}\varepsilon_0^2\Big) \implies \E_P[Y_t \mid \hat{y}_{<t}] \le \tfrac{1}{2}\varepsilon_0^2.
+\]
+Second, applying Hoeffding's lemma conditionally at steps $t = 1, \dots, Q$ for any $\theta > 0$ gives $\E_P\big[\exp\big(\theta \sum_{t=1}^Q (Y_t - \frac{1}{2}\varepsilon_0^2)\big)\big] \le e^{Q \theta^2 \varepsilon_0^2 / 2}$. Choosing $\theta = \frac{\sqrt{2 Q \ln(1/\delta')}}{Q \varepsilon_0}$ and applying Markov's inequality yields $\Prob_{y \sim P}\big[\ln\frac{P(y)}{\tilde{P}(y)} > \varepsilon'\big] \le \delta'$ for $\varepsilon' = \frac{1}{2} Q \varepsilon_0^2 + \varepsilon_0 \sqrt{2 Q \ln(1/\delta')}$. Letting $G := \{y : P(y) \le e^{\varepsilon'} \tilde{P}(y)\}$, every event $E$ satisfies
+\[
+    P(E) = P(E \cap G) + P(E \setminus G) \le e^{\varepsilon'} \tilde{P}(E \cap G) + P(\neg G) \le e^{\varepsilon'} \tilde{P}(E) + \delta',
+\]
+and swapping $\mathbf{R} \leftrightarrow \tilde{\mathbf{R}}$ gives $\tilde{P}(E) \le e^{\varepsilon'} P(E) + \delta'$.
+\end{proof}
+
+\begin{theorem}[Adaptive Machine Unlearning via Seed-DP Random Forests]
+\label{thm:adaptive}
+Let $\beta, \gamma \in (0, 1)$, $\varepsilon \in (0, 1]$, and $\delta \in (0, 1)$. Maintain an internal ensemble $\Sigma_\tau = (T(S_\tau; R^{(1)}), \dots, T(S_\tau; R^{(L)}))$ of $L$ independent instances of Theorem~\ref{thm:oblivious} with
+\[
+    L := \left\lceil \frac{16 \ln(k / \delta_q) \sqrt{2 Q \ln(1/\delta_0)}}{\gamma \varepsilon} \right\rceil = \tilde{\Theta}\left(\frac{\sqrt{Q}}{\gamma \varepsilon}\right), \qquad \delta_0 := \min\left(\frac{\delta}{2}, \, \frac{1}{N^4}\right),
+\]
+answering up to $Q$ adaptive prediction queries via Lemma~\ref{lem:composition} with $b = \frac{\gamma L}{4 \ln(k/\delta_q)}$ and processing \textbf{arbitrarily many ($M$ unbounded)} adaptive single-example insertions and deletions silently. Then against any adaptive adversary:
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+    \item \textbf{Certified $(\varepsilon, \delta)$-Adaptive Unlearning:} At any audit step $\tau$, extracting a tree $M_\tau = T(S_\tau; R^{(\ell^*)})$ ($\ell^* \sim \Unif[L]$) satisfies $(S_\tau, M_\tau) \approx_{\varepsilon, \delta/2} (S_\tau, \calA(S_\tau))$. (Moreover, choosing $L = \Theta\big(\frac{Q \ln(k/\delta_q)}{\gamma \varepsilon}\big)$ yields \emph{pure $(\varepsilon, 0)$-adaptive unlearning} with $\delta = 0$.)
+    \item \textbf{Adaptive Expected Update Time:} Every adaptive insertion or deletion at step $\tau$ runs in expected time
+    \begin{align*}
+        O\Big(L \cdot d \beta^{-2} \log^2 n \log(dN/\beta)\Big) &\quad \text{on } \{0,1\}^d, \\
+        O\Big(L \cdot d \beta^{-3} (\beta\log n + 1) \log n \log(dN/\beta)\Big) &\quad \text{on } \R^d.
+    \end{align*}
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+Updates emit no external output; thus the entire adaptive adversary transcript up to any step $\tau$ (including $(S_{\tau-1}, S_\tau)$) is a post-processing of the $\le Q$ prediction query answers. With $b = \frac{\gamma L}{4 \ln(k/\delta_q)}$, Lemma~\ref{lem:composition}(2) gives $\varepsilon_0 = \frac{8 \ln(k/\delta_q)}{\gamma L} \le \frac{\varepsilon}{2\sqrt{2Q\ln(1/\delta_0)}}$, so Lemma~\ref{lem:composition}(3) gives $(\varepsilon', \delta_0)$-DP with respect to each coordinate $R^{(\ell)}$ with
+\[
+    \varepsilon' = \tfrac{1}{2} Q \varepsilon_0^2 + \varepsilon_0 \sqrt{2Q\ln(1/\delta_0)} \le \frac{\varepsilon^2}{16\ln(1/\delta_0)} + \frac{\varepsilon}{2} \le \varepsilon.
+\]
+(For the pure $L = \Theta(\frac{Q \ln(k/\delta_q)}{\gamma \varepsilon})$ setting, pure composition gives $\varepsilon' = Q\varepsilon_0 \le \varepsilon$ and $\delta_0 = 0$.)
+
+\textbf{(1)} Fix any $\ell \in [L]$. Applying Lemma~\ref{lem:maxinfo} and the post-processing map $(R^{(\ell)}, S_\tau) \mapsto (S_\tau, T(S_\tau; R^{(\ell)}))$ yields $(S_\tau, T(S_\tau; R^{(\ell)})) \approx_{\varepsilon, \delta_0} (S_\tau, T(S_\tau; R')) \equiv (S_\tau, \calA(S_\tau))$. Averaging over $\ell^* \sim \Unif[L]$ preserves $(\varepsilon, \delta_0)$-indistinguishability with $\delta_0 \le \delta/2$.
+
+\textbf{(2)} Let $\mathsf{Work}(S_{\tau-1}, S_\tau; r)$ denote the deterministic runtime of copy $\ell$ on step $\tau$ when its seed takes value $r$. Notice that $\mathsf{Work}(S_{\tau-1}, S_\tau; r) \le C_0 d \beta^{-1} N \log N =: W_{\max}$ deterministically for all $r$ (even if the root itself rebuilds!). By Lemma~\ref{lem:maxinfo}, $(R^{(\ell)}, S_{\tau-1}, S_\tau) \approx_{\varepsilon, \delta_0} R' \otimes (S_{\tau-1}, S_\tau)$ where $R' \sim \calD_R$ is independent of $(S_{\tau-1}, S_\tau)$. For any non-negative function $f \in [0, W_{\max}]$, integrating tail probabilities $\Prob[f > t]$ over $t \in [0, W_{\max}]$ under $(\varepsilon, \delta_0)$-indistinguishability gives
+\[
+    \E\big[\mathsf{Work}(S_{\tau-1}, S_\tau; R^{(\ell)})\big] \le e^\varepsilon \E_{S_{\tau-1}, S_\tau}\Big[\E_{R'}\big[\mathsf{Work}(S_{\tau-1}, S_\tau; R')\big]\Big] + \delta_0 W_{\max}.
+\]
+For fixed $(S_{\tau-1}, S_\tau)$ and fresh $R'$, $\E_{R'}[\mathsf{Work}(S_{\tau-1}, S_\tau; R')]$ is bounded by Theorem~\ref{thm:oblivious}'s oblivious bound; meanwhile, since $\delta_0 \le N^{-4}$, $\delta_0 W_{\max} = O(d \beta^{-1} N^{-3} \log N) = o(1)$! Since $e^\varepsilon \le e$ for $\varepsilon \le 1$, summing over $\ell = 1, \dots, L$ by linearity of expectation proves Part~(2).
+\end{proof}
+
+% ==============================================================================
+\section{Open Directions and Next Targets}
+% ==============================================================================
+
+\subsection{Attacking the \texorpdfstring{$\beta$}{beta}-Dependence on \texorpdfstring{$\R^d$}{R\^{}d}}
+
+Inspecting the proof of Theorem~\ref{thm:oblivious}, notice a striking asymmetry between $\{0,1\}^d$ and $\R^d$:
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt]
+    \item \textbf{Path Verification Cost on $\R^d$:} Updating the $d$ BSTs and querying the $K = \tilde{\Theta}(\beta^{-1})$ quantile windows across all $h = O(\beta^{-1}\log n)$ ancestors already runs in $\tilde{O}(d \beta^{-2} \log^2 n)$ deterministic time---\emph{only quadratic in $\beta^{-1}$}!
+    \item \textbf{Exact Bottleneck Causing $\beta^{-3}$ on $\R^d$:} The sole $\beta^{-3}$ term comes from multiplying three $\beta^{-1}$ factors:
+    \[
+        \underbrace{O(\beta^{-1}\log n)}_{\text{path height } h} \;\times\; \underbrace{O\Big(\frac{\log(dN/\beta)}{\beta n_p}\Big)}_{\text{flip prob.\ at } p} \;\times\; \underbrace{O(d \beta^{-1} n_p)}_{\text{building explicit BSTs across } \calI(T_p)}.
+    \]
+    On $\{0,1\}^d$, the smaller-to-larger trick reduced static rebuild time of $T_p$ from $O(d \beta^{-1} n_p)$ to $O(d n_p \log n_p)$ (independent of $\beta^{-1}$!), saving a full factor of $\beta^{-1}$. On $\R^d$, explicitly materializing a fresh order-statistic BST $\calB_{v, j}$ at every internal node along a heavy path of length $\Theta(\beta^{-1}\log n)$ forced $\sum_{v \in \calI(T_p)} d n_v = \Theta(d \beta^{-1} n_p)$ work and $O(nd\beta^{-1})$ space.
+\end{itemize}
+
+This isolates the exact question: \emph{Can we maintain canonical MinHash-Gumbel splits along heavy paths without materializing explicit BSTs at every heavy-path node (e.g., via heavy-path decomposition + 2D orthogonal range / wavelet trees, or persistent BSTs), shaving both space to $\tilde{O}(nd)$ and expected update time on $\R^d$ from $\tilde{O}(d\beta^{-3})$ down to $\tilde{O}(d\beta^{-2})$---and what conditional lower bounds (3SUM / Orthogonal Vectors) govern the optimal exponent of $\beta^{-1}$?}
+
+\subsection{End-to-End Learning Guarantees Under \texorpdfstring{$+\beta$}{+beta} Additive Split Error}
+
+While top-down impurity heuristics can fail on worst-case non-monotone distributions even with exact splits ($\beta = 0$), Blanc, Lange, and Tan~\cite{blanc2020agnostic} proved that under product distributions with monotone Bayes targets, exact top-down impurity induction achieves error $\le \OPT_s + \varepsilon$ relative to size-$s$ trees in tree size $s^{\tilde{O}((\log s)/\varepsilon^2)}$. Extending this analysis via reverse-hybrid OSSS and mean-crossing thresholds reveals a sharp phase transition at $\beta = \tilde{\Theta}\big(\frac{\varepsilon^2}{\log^2 s}\big)$: when $\beta \le O\big(\frac{\varepsilon^2}{\log^2(s/\varepsilon)}\big)$, any $\beta$-approximate dynamic tree (and its top-$t$ weighted-gain prefix) inherits the $\OPT_s + \varepsilon$ guarantee with polynomial dynamic update time $\tilde{O}\big(d \frac{\log^4 s}{\varepsilon^4}\log^2 n\big)$ on $\{0,1\}^d$, whereas for $\beta \ge \tilde{\Omega}\big(\frac{\varepsilon^2}{\log^2 s}\big)$, biased monotone Tribes instances force $+\beta$-approximate trees of arbitrary size to incur $\Omega(\varepsilon)$ excess error.
+
+\subsection{Dynamic Globally Optimal (Exact) Decision Trees When \texorpdfstring{$d = O(\log n)$}{d = O(log n)}}
+
+A particularly interesting regime for dynamic decision trees is the low-dimensional Boolean setting $d = O(\log n)$ (say $d = c \log_2 n$ on $\{0,1\}^d$), where \emph{globally optimal} decision tree induction---minimizing exact regularized empirical error $\mathrm{err}_S(T) + \alpha |\calL(T)|$ or error under size/depth budgets, without any greedy heuristic~\cite{lin2020generalized}---admits an \emph{exact polynomial-time static algorithm}:
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt]
+    \item \textbf{Polynomial Static Exactness vs.\ Subcube Sparsity of Updates:} Over $\{0,1\}^d$, there are $3^d = n^{c \log_2 3} = \poly(n)$ axis-aligned subcubes $u \in \{0, 1, *\}^d$, so Bellman dynamic programming computes a globally optimal tree statically in $O(nd + d \cdot 3^d) = O(n + n^{1.585 c}\log n)$ time. Crucially, inserting or deleting a single point $(x, y) \in \{0,1\}^d \times \calY$ alters the class counts of \emph{only the $2^d = n^c$ subcubes} $u \in \prod_{j=1}^d \{x_j, *\}$ containing $x$. Propagating Bellman values bottom-up across these $2^d$ subcubes already gives deterministic worst-case update time $O(d \cdot 2^d) = O(n^c \log n)$---which is \emph{strictly sublinear $o(n)$ whenever $c < 1$}, beats static recomputation by $n^{\log_2(3/2)} \approx n^{0.585}$ at $c = 1$, and (under canonical tie-breaking) is completely deterministic and history-independent, achieving exact $(0,0)$-unlearning even against adaptive full-tree adversaries. Moreover, under a depth budget $D$, only $\sum_{r=0}^D \binom{d}{r} = O(d^D)$ subcubes contain $x$, giving $O(\log^{D+1} n)$ deterministic update time for constant $D$.
+    \item \textbf{Key Open Problem ($c \ge 1$ and Fine-Grained Complexity):} When $d = c \log_2 n$ with $c \ge 1$ (e.g., $d = 2\log_2 n$, where static exact DP still runs in polynomial time $O(n^{3.17}\log n)$), can globally optimal (or $(1+\varepsilon)$-globally optimal) decision trees be maintained dynamically in $o(2^d)$ or sublinear $o(n)$ update time, or do fine-grained hypotheses (SETH / dynamic Orthogonal Vectors) rule out $O(2^{(1-\delta)d})$ dynamic updates? And on $\R^d$ with $d = O(\log n)$, where coordinate ranks induce $(n+1)^d$ cells rather than $3^d$ subcubes, what exact or $(1+\varepsilon)$-optimal dynamic guarantees are achievable?
+\end{itemize}
+
+% ==============================================================================
+\begin{thebibliography}{99}
+
+\bibitem{beimel2022dynamic}
+A.~Beimel, H.~Kaplan, Y.~Mansour, K.~Nissim, T.~Saranurak, and U.~Stemmer.
+\newblock Dynamic algorithms against an adaptive adversary: Generic constructions and lower bounds.
+\newblock In \emph{Proceedings of the 54th Annual ACM SIGACT Symposium on Theory of Computing (STOC)}, pages 1671--1684, 2022.
+
+\bibitem{blanc2020agnostic}
+G.~Blanc, J.~Lange, and L.-Y. Tan.
+\newblock Provable guarantees for decision tree induction: The agnostic setting.
+\newblock In \emph{Proceedings of the 37th International Conference on Machine Learning (ICML)}, PMLR 119, pages 941--949, 2020.
+
+\bibitem{bressan2023fully}
+M.~Bressan, G.~Damay, and M.~Sozio.
+\newblock Fully-dynamic decision trees.
+\newblock In \emph{Proceedings of the AAAI Conference on Artificial Intelligence (AAAI)}, volume 37(6), pages 6842--6849, 2023.
+
+\bibitem{bressan2024worst}
+M.~Bressan and M.~Sozio.
+\newblock Fully-dynamic approximate decision trees with worst-case update time guarantees.
+\newblock In \emph{Proceedings of the 41st International Conference on Machine Learning (ICML)}, PMLR 235, pages 4517--4541, 2024.
+
+\bibitem{brophy2021machine}
+J.~Brophy and D.~Lowd.
+\newblock Machine unlearning for random forests.
+\newblock In \emph{Proceedings of the 38th International Conference on Machine Learning (ICML)}, PMLR 139, pages 1092--1104, 2021.
+
+\bibitem{dwork2015generalization}
+C.~Dwork, V.~Feldman, M.~Hardt, T.~Pitassi, O.~Reingold, and A.~Roth.
+\newblock Generalization in adaptive data analysis and holdout reuse.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}, volume 28, 2015.
+
+\bibitem{ginart2019making}
+A.~Ginart, M.~Guan, G.~Valiant, and J.~Y. Zou.
+\newblock Making AI forget you: Data deletion in machine learning.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}, volume 32, 2019.
+
+\bibitem{gupta2021adaptive}
+V.~Gupta, C.~Jung, S.~Neel, A.~Roth, S.~Sharifi-Malvajerdi, and C.~Waites.
+\newblock Adaptive machine unlearning.
+\newblock In \emph{Advances in Neural Information Processing Systems (NeurIPS)}, volume 34, pages 16319--16330, 2021.
+
+\bibitem{lin2020generalized}
+J.~Lin, C.~Zhong, D.~Hu, C.~Rudin, and M.~Seltzer.
+\newblock Generalized and scalable optimal sparse decision trees.
+\newblock In \emph{Proceedings of the 37th International Conference on Machine Learning (ICML)}, PMLR 119, pages 6150--6160, 2020.
+
+\bibitem{naor2001anti}
+M.~Naor and V.~Teague.
+\newblock Anti-persistence: History independent data structures.
+\newblock In \emph{Proceedings of the 33rd Annual ACM Symposium on Theory of Computing (STOC)}, pages 492--501, 2001.
+
+\bibitem{schelter2021hedgecut}
+S.~Schelter, S.~Grafberger, and T.~Dunning.
+\newblock HedgeCut: Maintaining randomised trees for low-latency machine unlearning.
+\newblock In \emph{Proceedings of the ACM SIGMOD International Conference on Management of Data}, pages 1545--1557, 2021.
+
+\bibitem{ullah2021machine}
+E.~Ullah, T.~Mai, A.~Rao, R.~A. Rossi, and R.~Arora.
+\newblock Machine unlearning via algorithmic stability.
+\newblock In \emph{Proceedings of the 34th Conference on Learning Theory (COLT)}, PMLR 134, pages 4126--4142, 2021.
+
+\bibitem{wang2025dynfrs}
+S.~Wang, Z.~Shen, X.~Qiao, T.~Zhang, and M.~Zhang.
+\newblock DynFrs: An efficient framework for machine unlearning in random forest.
+\newblock In \emph{International Conference on Learning Representations (ICLR)}, 2025.
+
+\end{thebibliography}
+
+\end{document}
